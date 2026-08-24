@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CombosRouteImport } from './routes/combos'
 import { Route as GamesRouteImport } from './routes/games'
+import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as StatsRouteImport } from './routes/stats'
 import { Route as ComboComboIdRouteImport } from './routes/combo.$comboId'
 import { Route as GameGameIdRouteImport } from './routes/game.$gameId'
@@ -29,6 +30,11 @@ const CombosRoute = CombosRouteImport.update({
 const GamesRoute = GamesRouteImport.update({
   id: '/games',
   path: '/games',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
 const StatsRoute = StatsRouteImport.update({
@@ -51,6 +57,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/combos': typeof CombosRoute
   '/games': typeof GamesRoute
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/combo/$comboId': typeof ComboComboIdRoute
   '/game/$gameId': typeof GameGameIdRoute
@@ -59,6 +66,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/combos': typeof CombosRoute
   '/games': typeof GamesRoute
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/combo/$comboId': typeof ComboComboIdRoute
   '/game/$gameId': typeof GameGameIdRoute
@@ -68,6 +76,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/combos': typeof CombosRoute
   '/games': typeof GamesRoute
+  '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/combo/$comboId': typeof ComboComboIdRoute
   '/game/$gameId': typeof GameGameIdRoute
@@ -75,15 +84,28 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/combos' | '/games' | '/stats' | '/combo/$comboId' | '/game/$gameId'
+    | '/'
+    | '/combos'
+    | '/games'
+    | '/settings'
+    | '/stats'
+    | '/combo/$comboId'
+    | '/game/$gameId'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/combos' | '/games' | '/stats' | '/combo/$comboId' | '/game/$gameId'
+    | '/'
+    | '/combos'
+    | '/games'
+    | '/settings'
+    | '/stats'
+    | '/combo/$comboId'
+    | '/game/$gameId'
   id:
     | '__root__'
     | '/'
     | '/combos'
     | '/games'
+    | '/settings'
     | '/stats'
     | '/combo/$comboId'
     | '/game/$gameId'
@@ -93,6 +115,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CombosRoute: typeof CombosRoute
   GamesRoute: typeof GamesRoute
+  SettingsRoute: typeof SettingsRoute
   StatsRoute: typeof StatsRoute
   ComboComboIdRoute: typeof ComboComboIdRoute
   GameGameIdRoute: typeof GameGameIdRoute
@@ -119,6 +142,13 @@ declare module '@tanstack/react-router' {
       path: '/games'
       fullPath: '/games'
       preLoaderRoute: typeof GamesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/stats': {
@@ -149,6 +179,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CombosRoute: CombosRoute,
   GamesRoute: GamesRoute,
+  SettingsRoute: SettingsRoute,
   StatsRoute: StatsRoute,
   ComboComboIdRoute: ComboComboIdRoute,
   GameGameIdRoute: GameGameIdRoute,
