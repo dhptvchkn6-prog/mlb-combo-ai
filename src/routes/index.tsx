@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 
 import {
   ConfidenceMeter,
-  DemoBanner,
+  DataStatusBanner,
   LoadingCards,
   RiskBadge,
   Screen,

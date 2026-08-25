@@ -34,13 +34,18 @@ export const getBoard = createServerFn({ method: "GET" })
       minConfidence: data.minConfidence,
     });
 
+    const missingSources = result.data.sources.filter((source) => !source.connected).map((source) => source.name);
+    const liveConnected = missingSources.length === 0;
+
     return {
       update: {
         mode: "LIVE",
-        liveConnected: true,
+        liveConnected,
         lastUpdatedAt: nowIso,
         sources: result.data.sources,
-        message: "Live MLB schedule, odds, injury and statistics data loaded.",
+        message: liveConnected
+          ? "Live MLB schedule, odds, injury and statistics data loaded."
+          : `Live board is partial. Missing: ${missingSources.join(", ")}. No unavailable markets are fabricated.`,
       },
       games: result.data.games,
       players: result.data.players,

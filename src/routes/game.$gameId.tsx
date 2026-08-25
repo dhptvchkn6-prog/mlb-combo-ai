@@ -48,6 +48,19 @@ function GameDetails() {
   const game = board?.games.find((g) => g.id === gameId) ?? null;
   const picks = (board?.picks ?? []).filter((p) => p.gameId === gameId);
   const markets = (board?.markets ?? []).filter((m) => m.gameId === gameId);
+  const marketSelection = (teamId: string | null, playerId: string | null) => {
+    const player = board?.players.find((p) => p.id === playerId);
+    if (player) return player.name;
+    const team = game && [game.awayTeam, game.homeTeam].find((t) => t.id === teamId);
+    return team?.name ?? "Selection unavailable";
+  };
+  const marketMatchup = (teamId: string | null) => {
+    if (!game || !teamId) return "Matchup unavailable";
+    const isHome = game.homeTeam.id === teamId;
+    const team = isHome ? game.homeTeam : game.awayTeam;
+    const opponent = isHome ? game.awayTeam : game.homeTeam;
+    return `${team.abbreviation} vs ${opponent.abbreviation}`;
+  };
 
   return (
     <Screen>
@@ -140,11 +153,13 @@ function GameDetails() {
                   <div key={market.id} className="app-card p-3">
                     <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-bold">
-                          {board?.players.find((p) => p.id === market.playerId)?.name ??
-                            "Unknown selection"}
+                        <p className="break-words text-sm font-bold">
+                          {marketSelection(market.teamId, market.playerId)}
                         </p>
-                        <p className="text-xs text-muted-foreground">{market.label}</p>
+                        <p className="text-xs text-muted-foreground">{marketMatchup(market.teamId)}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {market.label}{market.line === null ? "" : ` — ${market.line > 0 ? "+" : ""}${market.line}`}
+                        </p>
                       </div>
                       <span className="shrink-0 text-sm font-black tabular-nums">
                         {formatAmerican(market.odds?.american)}

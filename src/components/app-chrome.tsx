@@ -83,6 +83,21 @@ export function DataStatusBanner({ update }: { update: DataUpdate | null }) {
       <p className="mt-1 text-xs text-muted-foreground">
         Last updated {new Date(update.lastUpdatedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
       </p>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {update.sources.map((source) => (
+          <span
+            key={source.name}
+            className={cn(
+              "rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider",
+              source.connected
+                ? "border-primary/40 bg-primary/10 text-primary"
+                : "border-warning/40 bg-warning/10 text-warning",
+            )}
+          >
+            {source.connected ? "Live" : "Missing"} · {source.name}
+          </span>
+        ))}
+      </div>
     </section>
   );
 }

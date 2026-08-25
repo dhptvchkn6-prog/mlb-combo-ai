@@ -25,7 +25,7 @@ export interface ProviderResult<T> {
 
 const MLB_BASE = "https://statsapi.mlb.com/api/v1";
 const MLB_LIVE_BASE = "https://statsapi.mlb.com/api/v1.1";
-const ESPN_SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb";
+const ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/baseball/leagues/mlb";
 
 interface JsonRecord {
   [key: string]: unknown;
@@ -141,13 +141,13 @@ function battingAverageSplit(avg: number | null, games: number | null): SplitLin
 
 function buildRecentSplit(gameLogs: unknown[], take: number, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
   const logs = gameLogs.slice(-take);
-  const total = logs.reduce((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  const total = logs.reduce<number>((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
   return splitFromTotals(total, logs.length);
 }
 
 function homeAwaySplit(gameLogs: unknown[], isHome: boolean, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
   const logs = gameLogs.filter((entry) => child(entry, "isHome") === isHome);
-  const total = logs.reduce((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  const total = logs.reduce<number>((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
   return splitFromTotals(total, logs.length);
 }
 
@@ -247,37 +247,32 @@ function mergeTeamStatsFromEspn(base: Map<string, TeamStatistics>, games: Game[]
   }
 }
 
-function chooseOdds(competition: unknown): unknown | null {
-  const odds = asArray(child(competition, "odds"));
-  return (
-    odds.find((item) => asString(child(child(item, "provider"), "displayName")) === "DraftKings") ??
-    odds.find((item) => Boolean(child(item, "moneyline"))) ??
-    odds[0] ??
-    null
-  );
-}
-
 function makeOdds(american: number | null, sportsbook: string, nowIso: string): Odds | null {
   if (american === null) return null;
   return { american, sportsbook, updatedAt: nowIso };
 }
 
-function addTeamMarkets(markets: Market[], game: Game, event: unknown, nowIso: string) {
-  const competition = asArray(child(event, "competitions"))[0];
-  const odds = chooseOdds(competition);
-  if (!odds) return;
-  const sportsbook =
-    asString(child(child(odds, "provider"), "displayName")) ??
-    asString(child(child(odds, "provider"), "name")) ??
-    "Live odds";
-  const sides: { key: "home" | "away"; team: Team; opponent: Team }[] = [
-    { key: "home", team: game.homeTeam, opponent: game.awayTeam },
-    { key: "away", team: game.awayTeam, opponent: game.homeTeam },
+function oddsValue(raw: unknown, side: "home" | "away", kind: "moneyline" | "spreadOdds" | "spreadLine"): number | null {
+  const sideOdds = child(raw, side === "home" ? "homeTeamOdds" : "awayTeamOdds");
+  if (kind === "moneyline") {
+    return parseAmerican(child(child(sideOdds, "current"), "moneyLine")) ?? parseAmerican(child(sideOdds, "moneyLine"));
+  }
+  const spread = child(child(sideOdds, "current"), "spread");
+  if (kind === "spreadOdds") return parseAmerican(child(spread, "alternateDisplayValue"));
+  if (kind === "spreadLine") return parseNumber(child(child(child(sideOdds, "current"), "pointSpread"), "alternateDisplayValue"));
+  return null;
+}
+
+function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, odds: unknown, nowIso: string) {
+  const provider = child(odds, "provider");
+  const sportsbook = asString(child(provider, "name")) ?? "Live odds";
+  const sides: { key: "home" | "away"; team: Team }[] = [
+    { key: "home", team: game.homeTeam },
+    { key: "away", team: game.awayTeam },
   ];
 
   for (const side of sides) {
-    const moneyline = child(child(child(child(odds, "moneyline"), side.key), "close"), "odds");
-    const mlOdds = makeOdds(parseAmerican(moneyline), sportsbook, nowIso);
+    const mlOdds = makeOdds(oddsValue(odds, side.key, "moneyline"), sportsbook, nowIso);
     if (mlOdds) {
       markets.push({
         id: `${game.id}-${side.team.id}-moneyline`,
@@ -293,9 +288,8 @@ function addTeamMarkets(markets: Market[], game: Game, event: unknown, nowIso: s
       });
     }
 
-    const spreadClose = child(child(child(odds, "pointSpread"), side.key), "close");
-    const spreadLine = parseNumber(child(spreadClose, "line"));
-    const spreadOdds = makeOdds(parseAmerican(child(spreadClose, "odds")), sportsbook, nowIso);
+    const spreadLine = oddsValue(odds, side.key, "spreadLine");
+    const spreadOdds = makeOdds(oddsValue(odds, side.key, "spreadOdds"), sportsbook, nowIso);
     if (spreadLine !== null && spreadOdds) {
       markets.push({
         id: `${game.id}-${side.team.id}-runline`,
@@ -303,7 +297,7 @@ function addTeamMarkets(markets: Market[], game: Game, event: unknown, nowIso: s
         playerId: null,
         teamId: side.team.id,
         marketType: "RUNLINE",
-        label: `Runline ${spreadLine > 0 ? "+" : ""}${spreadLine}`,
+        label: "Runline",
         line: spreadLine,
         odds: spreadOdds,
         sportsbook,
@@ -428,21 +422,31 @@ async function fetchPitchers(
     .filter((pitcher): pitcher is Pitcher => pitcher !== null);
 }
 
-async function fetchInjuredNames(): Promise<{ names: Set<string>; teamCounts: Map<string, number> }> {
-  const json = await getJsonSettled(`${ESPN_SITE_BASE}/injuries`);
+async function fetchInjuredNames(teamIds: string[], dateIso: string): Promise<{ names: Set<string>; teamCounts: Map<string, number>; connected: boolean }> {
   const names = new Set<string>();
   const teamCounts = new Map<string, number>();
-  for (const team of asArray(child(json, "injuries"))) {
-    const displayName = asString(child(team, "displayName"));
-    const injuries = asArray(child(team, "injuries"));
-    if (displayName) teamCounts.set(displayName, injuries.length);
-    for (const injury of injuries) {
-      const athlete = child(injury, "athlete");
-      const name = asString(child(athlete, "displayName"));
-      if (name) names.add(name.toLowerCase());
+  const endDate = dateIso;
+  const startDate = new Date(`${dateIso}T00:00:00.000Z`);
+  startDate.setUTCDate(startDate.getUTCDate() - 45);
+  let connected = false;
+
+  for (const teamId of teamIds) {
+    const url = `${MLB_BASE}/transactions?teamId=${teamId}&startDate=${startDate.toISOString().slice(0, 10)}&endDate=${endDate}&hydrate=person,team`;
+    const json = await getJsonSettled(url);
+    if (json !== null) connected = true;
+    let count = 0;
+    for (const tx of asArray(child(json, "transactions"))) {
+      const type = (asString(child(tx, "typeDesc")) ?? asString(child(tx, "description")) ?? "").toLowerCase();
+      if (!type.includes("injured") && !type.includes("injury") && !type.includes("il")) continue;
+      const personName = asString(child(child(tx, "person"), "fullName"));
+      if (!personName) continue;
+      count += 1;
+      names.add(personName.toLowerCase());
     }
+    teamCounts.set(teamId, count);
   }
-  return { names, teamCounts };
+
+  return { names, teamCounts, connected };
 }
 
 async function fetchRosterStats(
@@ -508,23 +512,33 @@ async function fetchRosterStats(
   return { players, statistics };
 }
 
-async function fetchEspnEvents(dateIso: string): Promise<unknown[]> {
+async function fetchEspnCoreEvents(dateIso: string): Promise<unknown[]> {
   const compact = dateIso.replaceAll("-", "");
-  const json = await getJsonSettled(`${ESPN_SITE_BASE}/scoreboard?dates=${compact}&limit=100`);
-  return asArray(child(json, "events"));
+  const json = await getJsonSettled(`${ESPN_CORE_BASE}/events?dates=${compact}&limit=100`);
+  const refs = asArray(child(json, "items"))
+    .map((item) => asString(child(item, "$ref")))
+    .filter((value): value is string => Boolean(value));
+  const events = await Promise.all(refs.map((ref) => getJsonSettled(ref.replace("http://", "https://"))));
+  return events.filter((event): event is unknown => event !== null);
 }
 
 function eventForGame(game: Game, events: unknown[]): unknown | null {
   return (
     events.find((event) => {
-      const competition = asArray(child(event, "competitions"))[0];
-      const competitors = asArray(child(competition, "competitors"));
-      const abbreviations = competitors
-        .map((c) => asString(child(child(c, "team"), "abbreviation")))
-        .filter((value): value is string => Boolean(value));
-      return abbreviations.includes(game.homeTeam.abbreviation) && abbreviations.includes(game.awayTeam.abbreviation);
+      const shortName = asString(child(event, "shortName")) ?? "";
+      const name = asString(child(event, "name")) ?? "";
+      const haystack = `${shortName} ${name}`;
+      return haystack.includes(game.homeTeam.abbreviation) && haystack.includes(game.awayTeam.abbreviation);
     }) ?? null
   );
+}
+
+async function fetchCoreOddsForEvent(event: unknown): Promise<unknown | null> {
+  const competition = asArray(child(event, "competitions"))[0];
+  const oddsRef = asString(child(child(competition, "odds"), "$ref"));
+  if (!oddsRef) return null;
+  const json = await getJsonSettled(oddsRef.replace("http://", "https://"));
+  return asArray(child(json, "items"))[0] ?? null;
 }
 
 function attachInjuryCounts(teamStats: Map<string, TeamStatistics>, games: Game[], teamCounts: Map<string, number>) {
@@ -532,22 +546,31 @@ function attachInjuryCounts(teamStats: Map<string, TeamStatistics>, games: Game[
     for (const team of [game.homeTeam, game.awayTeam]) {
       const stats = teamStats.get(team.id);
       if (!stats) continue;
-      stats.injuries = teamCounts.get(team.name) ?? 0;
+      stats.injuries = teamCounts.get(team.id) ?? 0;
     }
   }
+}
+
+function sourceStatus(dataset: Pick<LiveDataset, "games" | "players" | "markets">, injuriesConnected: boolean) {
+  return [
+    { name: "MLB StatsAPI schedule", connected: dataset.games.length > 0 },
+    { name: "MLB StatsAPI player stats", connected: dataset.players.length > 0 },
+    { name: "ESPN core live odds", connected: dataset.markets.length > 0 },
+    { name: "MLB transaction injury status", connected: injuriesConnected },
+  ];
 }
 
 export function getProviderStatus(): { name: string; connected: boolean }[] {
   return [
     { name: "MLB StatsAPI schedule", connected: true },
     { name: "MLB StatsAPI player stats", connected: true },
-    { name: "ESPN live odds", connected: true },
-    { name: "ESPN injury reports", connected: true },
+    { name: "ESPN core live odds", connected: false },
+    { name: "MLB transaction injury status", connected: false },
   ];
 }
 
 export function isLiveConnected(): boolean {
-  return true;
+  return false;
 }
 
 export async function fetchLiveBoard(dateIso: string, nowIso: string): Promise<ProviderResult<LiveDataset>> {
@@ -556,27 +579,33 @@ export async function fetchLiveBoard(dateIso: string, nowIso: string): Promise<P
     if (games.length === 0) {
       return {
         connected: true,
-        data: { games: [], players: [], statistics: [], teamStatistics: [], markets: [], sources: getProviderStatus() },
+        data: {
+          games: [],
+          players: [],
+          statistics: [],
+          teamStatistics: [],
+          markets: [],
+          sources: sourceStatus({ games: [], players: [], markets: [] }, false),
+        },
         error: null,
       };
     }
 
     const season = dateIso.slice(0, 4);
     await fetchTeamSeasonStats(teamStats, season);
-    const { names: injuredNames, teamCounts } = await fetchInjuredNames();
-    attachInjuryCounts(teamStats, games, teamCounts);
     const teamIds = Array.from(new Set(games.flatMap((g) => [g.homeTeam.id, g.awayTeam.id])));
+    const injuryResult = await fetchInjuredNames(teamIds, dateIso);
+    const injuredNames = injuryResult.names;
+    attachInjuryCounts(teamStats, games, injuryResult.teamCounts);
     const { players, statistics } = await fetchRosterStats(teamIds, injuredNames, nowIso);
     const markets: Market[] = [];
-    const events = await fetchEspnEvents(dateIso);
-
-    for (const event of events) {
-      mergeTeamStatsFromEspn(teamStats, games, event, nowIso);
-    }
+    const events = await fetchEspnCoreEvents(dateIso);
 
     for (const game of games) {
       const event = eventForGame(game, events);
-      if (event) addTeamMarkets(markets, game, event, nowIso);
+      if (!event) continue;
+      const odds = await fetchCoreOddsForEvent(event);
+      if (odds) addTeamMarketsFromCoreOdds(markets, game, odds, nowIso);
     }
 
     const payload: LiveDataset = {
@@ -585,7 +614,7 @@ export async function fetchLiveBoard(dateIso: string, nowIso: string): Promise<P
       statistics,
       teamStatistics: Array.from(teamStats.values()),
       markets,
-      sources: getProviderStatus(),
+      sources: sourceStatus({ games, players, markets }, injuryResult.connected),
     };
 
     return { connected: true, data: payload, error: null };
