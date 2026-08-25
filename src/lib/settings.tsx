@@ -9,13 +9,12 @@ export const DEFAULT_SETTINGS: Settings = {
   riskPreference: "BALANCED",
   minConfidence: 60,
   preferredLegs: 3,
-  sportsbook: "Demo Book",
+  sportsbook: "DraftKings",
   refreshInterval: "MANUAL",
-  dataMode: "DEMO",
+  dataMode: "LIVE",
 };
 
 export const SPORTSBOOKS = [
-  "Demo Book",
   "DraftKings",
   "FanDuel",
   "BetMGM",
