@@ -16,6 +16,19 @@ import type {
   TeamStatistics,
   Weather,
 } from "../types";
+import {
+  americanOdds,
+  espnListResponse,
+  liveFeedResponse,
+  peopleResponse,
+  readStat,
+  rosterResponse,
+  safeParse,
+  scheduleResponse,
+  statNumber,
+  teamStatsResponse,
+  transactionsResponse,
+} from "./schemas";
 
 export interface ProviderResult<T> {
   connected: boolean;
@@ -53,17 +66,11 @@ function child(value: unknown, key: string): unknown {
 }
 
 function parseNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value !== "string") return null;
-  const cleaned = value.replace(/[+,%]/g, "").trim();
-  if (!cleaned || cleaned === ".---" || cleaned === "-" || cleaned === "--") return null;
-  const parsed = Number(cleaned.startsWith(".") ? `0${cleaned}` : cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
+  return safeParse(statNumber, value, null);
 }
 
 function parseAmerican(value: unknown): number | null {
-  const parsed = parseNumber(value);
-  return parsed === null ? null : Math.round(parsed);
+  return safeParse(americanOdds, value, null);
 }
 
 function pctFromRecord(summary: string | null): number | null {
@@ -135,7 +142,8 @@ function splitFromTotals(total: number | null, games: number | null): SplitLine 
 }
 
 function addParsedStat(acc: number, statContainer: unknown, statName: "hits" | "totalBases" | "strikeOuts"): number {
-  return acc + (parseNumber(child(statContainer, statName)) ?? 0);
+  const parsed: number | null = readStat(statContainer, statName);
+  return acc + (parsed ?? 0);
 }
 
 function battingAverageSplit(avg: number | null, games: number | null): SplitLine {
@@ -313,7 +321,8 @@ function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, odds: unknown
 
 async function fetchTeamSeasonStats(teamStats: Map<string, TeamStatistics>, season: string) {
   const json = await getJsonSettled(`${MLB_BASE}/teams/stats?group=hitting,pitching&stats=season&season=${season}&sportIds=1`);
-  for (const group of asArray(child(json, "stats"))) {
+  const parsed = safeParse(teamStatsResponse, json, { stats: [] });
+  for (const group of parsed.stats) {
     const groupName = asString(child(child(group, "group"), "displayName"));
     for (const split of asArray(child(group, "splits"))) {
       const teamId = asNumber(child(child(split, "team"), "id"));
@@ -342,7 +351,8 @@ async function fetchTeamSeasonStats(teamStats: Map<string, TeamStatistics>, seas
 async function fetchSchedule(dateIso: string, nowIso: string) {
   const url = `${MLB_BASE}/schedule?sportId=1&date=${dateIso}&hydrate=probablePitcher,team,venue`;
   const json = await getJson(url);
-  const mlbGames = asArray(child(asArray(child(json, "dates"))[0], "games"));
+  const schedule = safeParse(scheduleResponse, json, { dates: [] });
+  const mlbGames = asArray(child(schedule.dates[0], "games"));
   const games: Game[] = [];
   const teamStats = new Map<string, TeamStatistics>();
   const pitcherIds: { id: string; teamId: string; gameId: string; side: "home" | "away" }[] = [];
@@ -398,7 +408,8 @@ async function fetchSchedule(dateIso: string, nowIso: string) {
 
 async function getWeather(gameId: string): Promise<Weather | null> {
   const json = await getJsonSettled(`${MLB_LIVE_BASE}/game/${gameId}/feed/live`);
-  const weatherRaw = child(child(json, "gameData"), "weather");
+  const feed = safeParse(liveFeedResponse, json, { gameData: null });
+  const weatherRaw = feed.gameData?.weather ?? null;
   if (!isRecord(weatherRaw) || Object.keys(weatherRaw).length === 0) return null;
   return {
     temperatureF: parseNumber(child(weatherRaw, "temp")),
@@ -417,8 +428,8 @@ async function fetchPitchers(
   if (unique.length === 0) return [];
   const ids = unique.map((ref) => ref.id).join(",");
   const json = await getJsonSettled(`${MLB_BASE}/people?personIds=${ids}&hydrate=stats(group=[pitching],type=[season])`);
-  return asArray(child(json, "people"))
-    .map((person) => {
+  return safeParse(peopleResponse, json, { people: [] })
+    .people.map((person) => {
       const id = asNumber(child(person, "id"));
       const ref = id === null ? undefined : unique.find((item) => item.id === String(id));
       return ref ? pitcherFromPerson(person, ref.teamId) : null;
@@ -439,7 +450,7 @@ async function fetchInjuredNames(teamIds: string[], dateIso: string): Promise<{ 
     const json = await getJsonSettled(url);
     if (json !== null) connected = true;
     let count = 0;
-    for (const tx of asArray(child(json, "transactions"))) {
+    for (const tx of safeParse(transactionsResponse, json, { transactions: [] }).transactions) {
       const type = (asString(child(tx, "typeDesc")) ?? asString(child(tx, "description")) ?? "").toLowerCase();
       if (!type.includes("injured") && !type.includes("injury") && !type.includes("il")) continue;
       const personName = asString(child(child(tx, "person"), "fullName"));
@@ -465,7 +476,7 @@ async function fetchRosterStats(
   for (const teamId of teamIds) {
     const url = `${MLB_BASE}/teams/${teamId}/roster?rosterType=active&hydrate=person(stats(group=[hitting],type=[season,gameLog]))`;
     const json = await getJsonSettled(url);
-    for (const entry of asArray(child(json, "roster"))) {
+    for (const entry of safeParse(rosterResponse, json, { roster: [] }).roster) {
       const person = child(entry, "person");
       const id = asNumber(child(person, "id"));
       const name = asString(child(person, "fullName"));
@@ -519,8 +530,8 @@ async function fetchRosterStats(
 async function fetchEspnCoreEvents(dateIso: string): Promise<unknown[]> {
   const compact = dateIso.replaceAll("-", "");
   const json = await getJsonSettled(`${ESPN_CORE_BASE}/events?dates=${compact}&limit=100`);
-  const refs = asArray(child(json, "items"))
-    .map((item) => asString(child(item, "$ref")))
+  const refs = safeParse(espnListResponse, json, { items: [] })
+    .items.map((item) => asString(child(item, "$ref")))
     .filter((value): value is string => Boolean(value));
   const events = await Promise.all(refs.map((ref) => getJsonSettled(ref.replace("http://", "https://"))));
   return events.filter((event): event is unknown => event !== null);
@@ -542,7 +553,7 @@ async function fetchCoreOddsForEvent(event: unknown): Promise<unknown | null> {
   const oddsRef = asString(child(child(competition, "odds"), "$ref"));
   if (!oddsRef) return null;
   const json = await getJsonSettled(oddsRef.replace("http://", "https://"));
-  return asArray(child(json, "items"))[0] ?? null;
+  return safeParse(espnListResponse, json, { items: [] }).items[0] ?? null;
 }
 
 function attachInjuryCounts(teamStats: Map<string, TeamStatistics>, games: Game[], teamCounts: Map<string, number>) {
