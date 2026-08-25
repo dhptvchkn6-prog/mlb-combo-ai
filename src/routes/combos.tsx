@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 
-import { DemoBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
+import { DataStatusBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
 import { ComboCard } from "@/components/combo-card";
 import { useBoard } from "@/lib/use-board";
 import type { RiskCategory } from "@/lib/types";
@@ -68,7 +68,7 @@ function CombosScreen() {
   return (
     <Screen>
       <ScreenTitle title="Combos" subtitle="Filter by risk and leg count" />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       <div className="-mx-4 overflow-x-auto no-scrollbar px-4">
         <div className="flex w-max gap-2" role="group" aria-label="Filter by risk category">

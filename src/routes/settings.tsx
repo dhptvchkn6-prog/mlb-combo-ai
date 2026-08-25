@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { DemoBanner, Screen, ScreenTitle } from "@/components/app-chrome";
+import { DataStatusBanner, Screen, ScreenTitle } from "@/components/app-chrome";
 import { SPORTSBOOKS, useSettings } from "@/lib/settings";
 import { useBoard } from "@/lib/use-board";
-import type { DataMode, RefreshInterval, RiskPreference, Settings } from "@/lib/types";
+import type { RefreshInterval, RiskPreference, Settings } from "@/lib/types";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -77,7 +77,7 @@ function SettingsScreen() {
   return (
     <Screen>
       <ScreenTitle title="Settings" subtitle="All controls work by tapping" />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       <Section title="Risk preference">
         <OptionRow<RiskPreference>

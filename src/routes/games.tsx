@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 
-import { DemoBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
+import { DataStatusBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
 import { useBoard } from "@/lib/use-board";
 
 export const Route = createFileRoute("/games")({
@@ -28,7 +28,7 @@ function GamesScreen() {
   return (
     <Screen>
       <ScreenTitle title="Games" subtitle="Today's board" />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       {isLoading ? <LoadingCards /> : null}
 
@@ -44,7 +44,7 @@ function GamesScreen() {
       {!isLoading && !isError && (board?.games.length ?? 0) === 0 ? (
         <StatePanel
           title="No games available"
-          message="No schedule data is available right now. Connect a live data source or refresh from Home."
+          message="No schedule data is available right now. Refresh from Home or try again later."
         />
       ) : null}
 
