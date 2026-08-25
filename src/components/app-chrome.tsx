@@ -102,6 +102,8 @@ export function DataStatusBanner({ update }: { update: DataUpdate | null }) {
   );
 }
 
+export const DemoBanner = DataStatusBanner;
+
 const RISK_STYLE: Record<RiskCategory, string> = {
   SAFE: "border-safe/50 bg-safe/15 text-safe",
   SMART: "border-smart/50 bg-smart/15 text-smart",
