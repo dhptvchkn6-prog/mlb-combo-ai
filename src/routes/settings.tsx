@@ -1,9 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 
-import { DemoBanner, Screen, ScreenTitle } from "@/components/app-chrome";
+import { DataStatusBanner, Screen, ScreenTitle } from "@/components/app-chrome";
 import { SPORTSBOOKS, useSettings } from "@/lib/settings";
 import { useBoard } from "@/lib/use-board";
-import type { DataMode, RefreshInterval, RiskPreference, Settings } from "@/lib/types";
+import type { RefreshInterval, RiskPreference, Settings } from "@/lib/types";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({
@@ -72,12 +72,10 @@ function OptionRow<T extends string | number>({
 function SettingsScreen() {
   const { settings, update, reset, timezone } = useSettings();
   const { board, refresh, isRefreshing } = useBoard();
-  const liveUnavailable = settings.dataMode === "LIVE" && !board?.update.liveConnected;
-
   return (
     <Screen>
       <ScreenTitle title="Settings" subtitle="All controls work by tapping" />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       <Section title="Risk preference">
         <OptionRow<RiskPreference>
@@ -182,29 +180,10 @@ function SettingsScreen() {
         </button>
       </Section>
 
-      <Section title="Data mode">
-        <OptionRow<DataMode>
-          label="Data mode"
-          value={settings.dataMode}
-          onChange={(v) => update("dataMode", v)}
-          options={[
-            { value: "LIVE", label: "Live" },
-            { value: "DEMO", label: "Demo" },
-          ]}
-        />
-        {liveUnavailable ? (
-          <p
-            role="status"
-            className="mt-3 rounded-xl border border-warning/60 bg-warning/10 p-3 text-sm font-semibold text-warning"
-          >
-            Live data isn't connected yet. The board stays clearly labeled DEMO — nothing fictional
-            is ever shown as live.
-          </p>
-        ) : null}
-        <p className="mt-2 text-xs text-muted-foreground">
-          Data sources:{" "}
+      <Section title="Live data sources">
+        <p className="text-xs text-muted-foreground">
           {(board?.update.sources ?? []).map((s) => `${s.name} (${s.connected ? "on" : "off"})`).join(", ") ||
-            "unknown"}
+            "Loading source status"}
         </p>
       </Section>
 

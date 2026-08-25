@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 
-import { DemoBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
+import { DataStatusBanner, LoadingCards, Screen, ScreenTitle, StatePanel } from "@/components/app-chrome";
 import { useBoard } from "@/lib/use-board";
 import type { PlayerStatistics, Player, SplitLine } from "@/lib/types";
 
@@ -111,7 +111,7 @@ function StatsScreen() {
   return (
     <Screen>
       <ScreenTitle title="Stats" subtitle="Tap a card to expand splits" />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       {isLoading ? <LoadingCards count={4} /> : null}
       {isError ? (
@@ -125,7 +125,7 @@ function StatsScreen() {
       {!isLoading && !isError && cards.length === 0 ? (
         <StatePanel
           title="No statistics available"
-          message="No statistical data is connected right now."
+          message="No qualifying player statistics are available from the live source right now."
         />
       ) : null}
 

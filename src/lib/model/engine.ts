@@ -1,10 +1,4 @@
-// Scoring engine — pure, data-in / data-out. No network, no UI.
-//
-// Pipeline (per available market):
-//  1. validate data      2. player/team status   3. lineup status
-//  4. starting pitcher   5. sample size          6. projection
-//  7. probability        8. implied probability  9. edge
-// 10. confidence        11. rank picks          12. build combinations
+// Scoring engine — pure, live data-in / ranked data-out. No network, no UI.
 
 import { americanToDecimal, americanToImplied, decimalToAmerican } from "../odds";
 import type {
@@ -17,12 +11,15 @@ import type {
   PlayerStatistics,
   ProjectionFactor,
   RiskCategory,
+  Team,
+  TeamStatistics,
 } from "../types";
 
 export interface EngineInput {
   games: Game[];
   players: Player[];
   statistics: PlayerStatistics[];
+  teamStatistics: TeamStatistics[];
   markets: Market[];
   nowIso: string;
   minConfidence?: number;
@@ -48,175 +45,359 @@ function factor(
   };
 }
 
-function qualityFrom(sampleSize: number, lineupOk: boolean, pitcherOk: boolean): DataQuality {
-  let score = 0;
-  if (sampleSize >= 200) score += 2;
-  else if (sampleSize >= 60) score += 1;
-  if (lineupOk) score += 1;
-  if (pitcherOk) score += 1;
-  if (score >= 3) return "HIGH";
+function fmt(value: number | null | undefined, digits = 3): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return value.toFixed(digits);
+}
+
+function fmtRuns(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return value.toFixed(2);
+}
+
+function qualityFromScore(score: number): DataQuality {
+  if (score >= 4) return "HIGH";
   if (score >= 2) return "MEDIUM";
   return "LOW";
 }
 
-function riskFor(probability: number, edge: number | null): RiskCategory {
-  if (probability >= 0.68) return "SAFE";
-  if ((edge ?? 0) >= 0.05) return "VALUE";
-  if (probability >= 0.55) return "SMART";
+function riskFor(probability: number, edge: number | null, marketType: Market["marketType"]): RiskCategory {
+  if (marketType === "RUNLINE") return probability >= 0.53 ? "SMART" : "AGGRESSIVE";
+  if ((edge ?? 0) >= 0.045) return "VALUE";
+  if (probability >= 0.62) return "SAFE";
+  if (probability >= 0.54) return "SMART";
   return "AGGRESSIVE";
 }
 
+function hasRequiredMarketData(market: Market): boolean {
+  return Boolean(market.gameId && market.teamId && market.odds && Number.isFinite(market.odds?.american));
+}
+
+function teamSide(game: Game, teamId: string): { team: Team; opponent: Team; isHome: boolean } | null {
+  if (game.homeTeam.id === teamId) return { team: game.homeTeam, opponent: game.awayTeam, isHome: true };
+  if (game.awayTeam.id === teamId) return { team: game.awayTeam, opponent: game.homeTeam, isHome: false };
+  return null;
+}
+
+function freshness(nowIso: string, updatedAt: string): number {
+  const value = Math.max(0, (Date.parse(nowIso) - Date.parse(updatedAt)) / 60000);
+  return Number.isFinite(value) ? Math.round(value) : 0;
+}
+
+function createTeamPick(
+  market: Market,
+  game: Game,
+  teamStats: Map<string, TeamStatistics>,
+  nowIso: string,
+): Pick | null {
+  if (!market.teamId || !market.odds) return null;
+  const side = teamSide(game, market.teamId);
+  if (!side) return null;
+  const stats = teamStats.get(side.team.id);
+  const oppStats = teamStats.get(side.opponent.id);
+  if (!stats || !oppStats) return null;
+
+  const siteWinPct = side.isHome ? stats.homeWinPct : stats.awayWinPct;
+  const oppSiteWinPct = side.isHome ? oppStats.awayWinPct : oppStats.homeWinPct;
+  const winPctDelta = stats.winPct - oppStats.winPct;
+  const siteDelta = (siteWinPct ?? stats.winPct) - (oppSiteWinPct ?? oppStats.winPct);
+  const offenseDelta = (stats.runsPerGame ?? 4.4) - (oppStats.runsAllowedPerGame ?? 4.4);
+  const preventionDelta = (oppStats.runsPerGame ?? 4.4) - (stats.runsAllowedPerGame ?? 4.4);
+  const pitcher = side.isHome ? game.homePitcher : game.awayPitcher;
+  const opposingPitcher = side.isHome ? game.awayPitcher : game.homePitcher;
+  const pitcherEraDelta = (opposingPitcher?.era ?? 4.2) - (pitcher?.era ?? 4.2);
+  const injuryDelta = oppStats.injuries - stats.injuries;
+  const homeBump = side.isHome ? 0.025 : -0.015;
+
+  let projection =
+    0.5 +
+    winPctDelta * 0.42 +
+    siteDelta * 0.16 +
+    offenseDelta * 0.018 +
+    preventionDelta * 0.018 +
+    pitcherEraDelta * 0.018 +
+    injuryDelta * 0.006 +
+    homeBump;
+
+  if (market.marketType === "RUNLINE") {
+    projection += (market.line ?? 0) > 0 ? 0.095 : -0.075;
+  }
+
+  const probability = clamp(projection, market.marketType === "RUNLINE" ? 0.28 : 0.36, 0.76);
+  const implied = americanToImplied(market.odds.american);
+  const edge = probability - implied;
+  let qualityScore = 0;
+  if (stats.wins + stats.losses >= 20) qualityScore += 1;
+  if (siteWinPct !== null && oppSiteWinPct !== null) qualityScore += 1;
+  if (stats.runsPerGame !== null || stats.battingAverage !== null) qualityScore += 1;
+  if (pitcher && opposingPitcher) qualityScore += 1;
+  if (market.odds) qualityScore += 1;
+  const dataQuality = qualityFromScore(qualityScore);
+  const freshMin = freshness(nowIso, market.updatedAt);
+  const confidence = Math.round(
+    clamp(
+      probability * 62 +
+        (dataQuality === "HIGH" ? 24 : dataQuality === "MEDIUM" ? 14 : 4) +
+        clamp(edge * 125, -14, 14) -
+        clamp(freshMin / 45, 0, 8),
+      0,
+      100,
+    ),
+  );
+
+  const marketLabel = market.marketType === "RUNLINE" ? market.label : "Moneyline";
+  const reasoning: ProjectionFactor[] = [
+    factor("Selection", `${side.team.name} ${marketLabel}`),
+    factor("Opponent", side.opponent.name),
+    factor("Game time", game.startTime),
+    factor("Starting pitcher", pitcher ? `${pitcher.name} (${pitcher.era ?? "—"} ERA)` : null),
+    factor(
+      "Opposing pitcher",
+      opposingPitcher ? `${opposingPitcher.name} (${opposingPitcher.era ?? "—"} ERA)` : null,
+    ),
+    factor("Season record", `${stats.wins}-${stats.losses} (${fmt(stats.winPct, 3)})`),
+    factor("Home/away split", `${side.isHome ? "Home" : "Away"} ${fmt(siteWinPct, 3)}`),
+    factor("Opponent split", `${side.isHome ? "Away" : "Home"} ${fmt(oppSiteWinPct, 3)}`),
+    factor("Runs per game", fmtRuns(stats.runsPerGame), (stats.runsPerGame ?? 0) >= (oppStats.runsPerGame ?? 0) ? "POSITIVE" : "NEGATIVE"),
+    factor("Runs allowed per game", fmtRuns(stats.runsAllowedPerGame)),
+    factor("Bullpen", stats.bullpenEra === null ? null : `${stats.bullpenEra.toFixed(2)} ERA`),
+    factor("Player availability", `${stats.injuries} listed injuries`),
+    factor("Park", game.venue),
+    factor(
+      "Weather",
+      game.weather
+        ? `${game.weather.temperatureF ?? "—"}°F, ${game.weather.conditions ?? "conditions unavailable"}`
+        : null,
+    ),
+    factor("Current odds", `${market.odds.sportsbook} ${market.odds.american > 0 ? "+" : ""}${market.odds.american}`),
+    factor("Data freshness", `${freshMin} min old`),
+  ];
+
+  return {
+    id: `pick-${market.id}`,
+    marketId: market.id,
+    gameId: game.id,
+    selectionType: "TEAM_BET",
+    playerId: null,
+    playerName: null,
+    teamId: side.team.id,
+    teamName: side.team.name,
+    teamAbbreviation: side.team.abbreviation,
+    opponentTeamId: side.opponent.id,
+    opponentName: side.opponent.name,
+    opponentAbbreviation: side.opponent.abbreviation,
+    gameTime: game.startTime,
+    venue: game.venue,
+    startingPitcher: pitcher?.name ?? null,
+    opposingPitcher: opposingPitcher?.name ?? null,
+    selection: side.team.name,
+    marketType: market.marketType,
+    marketLabel,
+    line: market.line,
+    odds: market.odds,
+    projection: probability,
+    projectionLabel: `Projected win probability ${Math.round(probability * 1000) / 10}%`,
+    probability,
+    impliedProbability: implied,
+    edge,
+    confidence,
+    risk: riskFor(probability, edge, market.marketType),
+    reasoning,
+    dataQuality,
+    seasonStats: `${stats.wins}-${stats.losses}, ${fmtRuns(stats.runsPerGame)} R/G, ${fmtRuns(stats.runsAllowedPerGame)} RA/G`,
+    last5: "Team recent form unavailable from the connected odds feed",
+    last10: "Team recent form unavailable from the connected odds feed",
+    homeAwaySplit: `${side.isHome ? "Home" : "Away"} win pct ${fmt(siteWinPct, 3)}`,
+    handednessMatchup: `SP ${pitcher?.throws ?? "—"} vs opposing SP ${opposingPitcher?.throws ?? "—"}`,
+    dataFreshnessMinutes: freshMin,
+    updatedAt: nowIso,
+  };
+}
+
+function createPlayerPick(
+  market: Market,
+  game: Game,
+  player: Player,
+  stats: PlayerStatistics,
+  nowIso: string,
+): Pick | null {
+  if (!market.teamId || !market.odds) return null;
+  if (player.status === "OUT") return null;
+  const side = teamSide(game, player.teamId);
+  if (!side) return null;
+  const isPitcherProp = market.marketType === "STRIKEOUTS_OVER";
+  const opposingPitcher = side.isHome ? game.awayPitcher : game.homePitcher;
+  if (!isPitcherProp && !opposingPitcher) return null;
+
+  const recent = (stats.last5.average + stats.last10.average) / 2;
+  const site = side.isHome ? stats.home.average : stats.away.average;
+  const platoon = opposingPitcher?.throws === "L" ? stats.vsLeft.average : stats.vsRight.average;
+  const opponentSplit = stats.opponent?.average ?? null;
+  let projection = stats.season.average * 0.42 + recent * 0.26 + site * 0.16 + platoon * 0.16;
+  if (opponentSplit !== null) projection = projection * 0.9 + opponentSplit * 0.1;
+
+  const wind = game.weather?.windMph ?? null;
+  const windOut = game.weather?.windDirection?.startsWith("Out") ?? false;
+  if (wind !== null && windOut) projection *= 1.02;
+  if (wind !== null && !windOut && wind > 10) projection *= 0.99;
+
+  let probability: number;
+  const line = market.line ?? 0.5;
+  if (market.marketType === "TOTAL_BASES_OVER") {
+    probability = clamp(0.5 + (projection - line) * 0.22, 0.22, 0.84);
+  } else if (market.marketType === "RUNS_RBI_OVER") {
+    probability = clamp(0.5 + (projection - line) * 0.18, 0.22, 0.82);
+  } else if (isPitcherProp) {
+    probability = clamp(0.5 + (projection - line) * 0.14, 0.2, 0.86);
+  } else {
+    probability = clamp(1 - Math.pow(1 - clamp(projection, 0.01, 0.95), 4), 0.2, 0.9);
+  }
+  if (player.status === "QUESTIONABLE") probability *= 0.94;
+
+  const implied = americanToImplied(market.odds.american);
+  const edge = probability - implied;
+  let qualityScore = 0;
+  if (stats.sampleSize >= 120) qualityScore += 2;
+  else if (stats.sampleSize >= 50) qualityScore += 1;
+  if (stats.last5.games >= 5 && stats.last10.games >= 10) qualityScore += 1;
+  if (opposingPitcher || isPitcherProp) qualityScore += 1;
+  if (market.odds) qualityScore += 1;
+  const dataQuality = qualityFromScore(qualityScore);
+  const freshMin = freshness(nowIso, market.updatedAt);
+  const confidence = Math.round(
+    clamp(
+      probability * 64 +
+        (dataQuality === "HIGH" ? 22 : dataQuality === "MEDIUM" ? 13 : 4) +
+        clamp(edge * 120, -12, 12) -
+        clamp(freshMin / 45, 0, 8) -
+        (player.status === "QUESTIONABLE" ? 8 : 0),
+      0,
+      100,
+    ),
+  );
+
+  return {
+    id: `pick-${market.id}`,
+    marketId: market.id,
+    gameId: game.id,
+    selectionType: "PLAYER_PROP",
+    playerId: player.id,
+    playerName: player.name,
+    teamId: side.team.id,
+    teamName: side.team.name,
+    teamAbbreviation: side.team.abbreviation,
+    opponentTeamId: side.opponent.id,
+    opponentName: side.opponent.name,
+    opponentAbbreviation: side.opponent.abbreviation,
+    gameTime: game.startTime,
+    venue: game.venue,
+    startingPitcher: side.isHome ? game.homePitcher?.name ?? null : game.awayPitcher?.name ?? null,
+    opposingPitcher: opposingPitcher?.name ?? null,
+    selection: player.name,
+    marketType: market.marketType,
+    marketLabel: market.label,
+    line: market.line,
+    odds: market.odds,
+    projection,
+    projectionLabel: `AI projection ${projection.toFixed(2)}`,
+    probability,
+    impliedProbability: implied,
+    edge,
+    confidence,
+    risk: riskFor(probability, edge, market.marketType),
+    reasoning: [
+      factor("Player", player.name),
+      factor("Team", side.team.name),
+      factor("Opponent", side.opponent.name),
+      factor("Game time", game.startTime),
+      factor("Starting pitcher", side.isHome ? game.homePitcher?.name ?? null : game.awayPitcher?.name ?? null),
+      factor("Opposing pitcher", opposingPitcher?.name ?? null),
+      factor("Season stats", `${stats.season.average.toFixed(3)} over ${stats.season.games} G`),
+      factor("Last 5", `${stats.last5.average.toFixed(3)} over ${stats.last5.games} G`),
+      factor("Last 10", `${stats.last10.average.toFixed(3)} over ${stats.last10.games} G`),
+      factor("Home/away split", `${side.isHome ? "Home" : "Away"} ${site.toFixed(3)}`),
+      factor("Handedness matchup", `${player.bats} vs ${opposingPitcher?.throws ?? "—"}`),
+      factor("Market", market.label),
+      factor("Line", market.line !== null ? String(market.line) : null),
+      factor("Odds", `${market.odds.sportsbook} ${market.odds.american > 0 ? "+" : ""}${market.odds.american}`),
+      factor("Data freshness", `${freshMin} min old`),
+    ],
+    dataQuality,
+    seasonStats: `${stats.season.average.toFixed(3)} over ${stats.season.games} G`,
+    last5: `${stats.last5.average.toFixed(3)} over ${stats.last5.games} G`,
+    last10: `${stats.last10.average.toFixed(3)} over ${stats.last10.games} G`,
+    homeAwaySplit: `${side.isHome ? "Home" : "Away"} ${site.toFixed(3)}`,
+    handednessMatchup: `${player.bats} vs ${opposingPitcher?.throws ?? "—"}`,
+    dataFreshnessMinutes: freshMin,
+    updatedAt: nowIso,
+  };
+}
+
 export function runModel(input: EngineInput): EngineOutput {
-  const { games, players, statistics, markets, nowIso } = input;
+  const { games, players, statistics, markets, teamStatistics, nowIso } = input;
   const gameById = new Map(games.map((g) => [g.id, g]));
   const playerById = new Map(players.map((p) => [p.id, p]));
   const statsById = new Map(statistics.map((s) => [s.playerId, s]));
+  const teamStatsById = new Map(teamStatistics.map((s) => [s.teamId, s]));
 
   const picks: Pick[] = [];
 
   for (const market of markets) {
-    // 1. Validate data
+    if (!hasRequiredMarketData(market)) continue;
     const game = gameById.get(market.gameId);
-    if (!game || !market.playerId) continue;
-    const player = playerById.get(market.playerId);
-    const stats = statsById.get(market.playerId);
-    if (!player || !stats) continue;
+    if (!game || game.status === "FINAL" || game.status === "POSTPONED") continue;
 
-    // 2. Player status
-    if (player.status === "OUT") continue;
+    const pick = market.playerId
+      ? (() => {
+          const player = playerById.get(market.playerId ?? "");
+          const stats = statsById.get(market.playerId ?? "");
+          return player && stats ? createPlayerPick(market, game, player, stats, nowIso) : null;
+        })()
+      : createTeamPick(market, game, teamStatsById, nowIso);
 
-    // 3/4. Lineup + starting pitcher availability
-    const isHome = player.teamId === game.homeTeam.id;
-    const opposingPitcher = isHome ? game.awayPitcher : game.homePitcher;
-    const isPitcherProp = market.marketType === "STRIKEOUTS_OVER";
-    const lineupOk = game.lineupStatus === "CONFIRMED" || isPitcherProp;
-    const pitcherOk = isPitcherProp ? true : Boolean(opposingPitcher);
-
-    // 5. Sample size
-    const sampleSize = stats.sampleSize;
-
-    // 6. Projection
-    const recent = (stats.last5.average + stats.last10.average) / 2;
-    const site = isHome ? stats.home.average : stats.away.average;
-    const platoon =
-      opposingPitcher?.throws === "L" ? stats.vsLeft.average : stats.vsRight.average;
-    const opponentSplit = stats.opponent?.average ?? null;
-
-    let projection = stats.season.average * 0.4 + recent * 0.25 + site * 0.15 + platoon * 0.2;
-    if (opponentSplit !== null) projection = projection * 0.9 + opponentSplit * 0.1;
-
-    // Park + weather nudges
-    const wind = game.weather?.windMph ?? null;
-    const windOut = game.weather?.windDirection?.startsWith("Out") ?? false;
-    if (wind !== null && windOut) projection *= 1.02;
-    if (wind !== null && !windOut && wind > 10) projection *= 0.99;
-
-    // 7. Estimate probability of clearing the line
-    let probability: number;
-    if (isPitcherProp) {
-      const line = market.line ?? 5.5;
-      probability = clamp(0.5 + (projection - line) * 0.14, 0.2, 0.9);
-    } else if (market.marketType === "TOTAL_BASES_OVER") {
-      probability = clamp(projection * 1.55, 0.2, 0.88);
-    } else {
-      // Over 0.5 style: P(at least one) across ~4 opportunities
-      probability = clamp(1 - Math.pow(1 - projection, 4), 0.2, 0.92);
-    }
-    if (player.status === "QUESTIONABLE") probability *= 0.94;
-
-    // 8/9. Implied probability + edge
-    const american = market.odds?.american ?? null;
-    const implied = american === null ? null : americanToImplied(american);
-    const edge = implied === null ? null : probability - implied;
-
-    // 10. Confidence
-    const dataQuality = qualityFrom(sampleSize, lineupOk, pitcherOk);
-    const freshnessMin = Math.max(
-      0,
-      (Date.parse(nowIso) - Date.parse(market.updatedAt)) / 60000,
-    );
-    let confidence =
-      probability * 70 +
-      (dataQuality === "HIGH" ? 20 : dataQuality === "MEDIUM" ? 12 : 4) +
-      clamp((edge ?? 0) * 120, -10, 10) -
-      clamp(freshnessMin / 30, 0, 8);
-    if (player.status === "QUESTIONABLE") confidence -= 8;
-    confidence = Math.round(clamp(confidence, 0, 100));
-
-    const reasoning: ProjectionFactor[] = [
-      factor(
-        "Season stats",
-        `${stats.season.average} over ${stats.season.games} G`,
-        stats.season.average >= projection ? "POSITIVE" : "NEUTRAL",
-      ),
-      factor("Recent performance (L5 / L10)", `${stats.last5.average} / ${stats.last10.average}`,
-        recent >= stats.season.average ? "POSITIVE" : "NEGATIVE"),
-      factor(
-        "Starting pitcher matchup",
-        opposingPitcher ? `${opposingPitcher.name} (${opposingPitcher.era ?? "—"} ERA)` : null,
-      ),
-      factor("Batter handedness", player.bats),
-      factor("Pitcher handedness", opposingPitcher ? opposingPitcher.throws : null),
-      factor("Home / away", isHome ? "Home" : "Away"),
-      factor("Ballpark", game.venue),
-      factor(
-        "Weather",
-        game.weather
-          ? `${game.weather.temperatureF}°F, wind ${game.weather.windMph} mph ${game.weather.windDirection}`
-          : null,
-      ),
-      factor(
-        "Injury status",
-        player.status,
-        player.status === "ACTIVE" ? "POSITIVE" : "NEGATIVE",
-      ),
-      factor(
-        "Lineup status",
-        game.lineupStatus === "UNAVAILABLE" ? null : game.lineupStatus,
-        game.lineupStatus === "CONFIRMED" ? "POSITIVE" : "NEUTRAL",
-      ),
-      factor("Sample size", `${sampleSize} plate appearances`, sampleSize >= 200 ? "POSITIVE" : "NEGATIVE"),
-      factor("Data freshness", `${Math.round(freshnessMin)} min old`),
-      factor("Market line", market.line !== null ? String(market.line) : null),
-    ];
-
-    picks.push({
-      id: `pick-${market.id}`,
-      marketId: market.id,
-      gameId: game.id,
-      selection: player.name,
-      marketLabel: market.label,
-      line: market.line,
-      odds: market.odds,
-      probability,
-      impliedProbability: implied,
-      edge,
-      confidence,
-      risk: riskFor(probability, edge),
-      reasoning,
-      dataQuality,
-      updatedAt: nowIso,
-    });
+    if (!pick) continue;
+    if (!pick.teamName || !pick.opponentName || !pick.marketLabel || !pick.odds) continue;
+    picks.push(pick);
   }
 
-  // 11. Rank picks — never recommend LOW data quality
-  const qualified = picks
-    .filter((p) => p.dataQuality !== "LOW")
-    .sort((a, b) => b.confidence - a.confidence);
+  const ranked = dedupePicks(picks).sort((a, b) => {
+    const edgeDelta = (b.edge ?? -1) - (a.edge ?? -1);
+    if (Math.abs(edgeDelta) > 0.015) return edgeDelta;
+    return b.confidence - a.confidence;
+  });
 
-  const combos = buildCombos(qualified, gameById, nowIso, input.minConfidence ?? 55);
+  const qualified = ranked.filter((p) => p.dataQuality !== "LOW");
+  const combos = buildCombos(qualified, nowIso, input.minConfidence ?? 55);
 
-  return { picks: picks.sort((a, b) => b.confidence - a.confidence), combos };
+  return { picks: ranked, combos };
 }
 
-// 12. Build combinations
-function buildCombos(
-  pool: Pick[],
-  gameById: Map<string, Game>,
-  nowIso: string,
-  minConfidence: number,
-): Combo[] {
-  const eligible = pool.filter((p) => p.confidence >= minConfidence && p.odds);
+function dedupePicks(picks: Pick[]): Pick[] {
+  const bestByKey = new Map<string, Pick>();
+  for (const pick of picks) {
+    const key = `${pick.gameId}:${pick.teamId}:${pick.playerId ?? "team"}:${pick.marketType}:${pick.line ?? "ml"}`;
+    const existing = bestByKey.get(key);
+    if (!existing || pick.confidence > existing.confidence) bestByKey.set(key, pick);
+  }
+  return Array.from(bestByKey.values());
+}
+
+function compatibleWithCombo(legs: Pick[], candidate: Pick): boolean {
+  if (legs.some((leg) => leg.gameId === candidate.gameId)) return false;
+  if (legs.some((leg) => leg.teamId === candidate.opponentTeamId && leg.opponentTeamId === candidate.teamId)) {
+    return false;
+  }
+  const familyCount = legs.filter((leg) => leg.marketType === candidate.marketType).length;
+  if (familyCount >= 2) return false;
+  return true;
+}
+
+function comboIdFor(risk: RiskCategory, legs: Pick[]): string {
+  return `combo-${risk.toLowerCase()}-${legs.map((leg) => leg.marketId).join("-")}`.replace(/[^a-z0-9-]/gi, "-");
+}
+
+function buildCombos(pool: Pick[], nowIso: string, minConfidence: number): Combo[] {
+  const eligible = pool.filter((p) => p.confidence >= minConfidence && p.odds && p.impliedProbability !== null);
   const combos: Combo[] = [];
 
   const recipes: {
@@ -232,99 +413,93 @@ function buildCombos(
       risk: "SAFE",
       legs: 2,
       sort: (a, b) => b.probability - a.probability,
-      filter: (p) => p.probability >= 0.6 && p.dataQuality === "HIGH",
-      reasoning: "Highest model probability legs with HIGH data quality only.",
+      filter: (p) => p.marketType === "MONEYLINE" && p.probability >= 0.56,
+      reasoning: "Highest win-probability legs from the live moneyline board.",
     },
     {
       name: "Smart Balance",
       risk: "SMART",
       legs: 3,
       sort: (a, b) => b.confidence - a.confidence,
-      filter: (p) => p.probability >= 0.5,
-      reasoning: "Balances model probability against the offered price.",
+      filter: (p) => p.probability >= 0.49,
+      reasoning: "Balances projected probability, market price, and data completeness.",
     },
     {
       name: "Value Spots",
       risk: "VALUE",
       legs: 3,
-      sort: (a, b) => (b.edge ?? 0) - (a.edge ?? 0),
-      filter: (p) => (p.edge ?? 0) > 0,
-      reasoning: "Largest positive gap between model and implied probability.",
-    },
-    {
-      name: "Aggressive Swing",
-      risk: "AGGRESSIVE",
-      legs: 4,
-      sort: (a, b) => (b.odds?.american ?? 0) - (a.odds?.american ?? 0),
-      filter: () => true,
-      reasoning: "Higher variance legs with a larger potential payout.",
-    },
-    {
-      name: "Extended Board",
-      risk: "AGGRESSIVE",
-      legs: 5,
-      sort: (a, b) => (b.edge ?? 0) - (a.edge ?? 0),
-      filter: () => true,
-      reasoning: "Five-leg build for maximum payout; correlation-checked legs only.",
+      sort: (a, b) => (b.edge ?? -1) - (a.edge ?? -1),
+      filter: (p) => (p.edge ?? -1) > 0,
+      reasoning: "Largest positive gap between model probability and current implied probability.",
     },
     {
       name: "Two-Leg Value",
       risk: "VALUE",
       legs: 2,
-      sort: (a, b) => (b.edge ?? 0) - (a.edge ?? 0),
-      filter: (p) => (p.edge ?? 0) > 0.01,
-      reasoning: "Compact two-leg build around the top priced edges.",
+      sort: (a, b) => (b.edge ?? -1) - (a.edge ?? -1),
+      filter: (p) => (p.edge ?? -1) > 0.005,
+      reasoning: "Compact build around the top priced live edges.",
+    },
+    {
+      name: "Aggressive Swing",
+      risk: "AGGRESSIVE",
+      legs: 4,
+      sort: (a, b) => (b.odds?.american ?? -1000) - (a.odds?.american ?? -1000),
+      filter: (p) => p.confidence >= Math.max(50, minConfidence - 10),
+      reasoning: "Higher-risk live prices with wider payout variance.",
+    },
+    {
+      name: "Extended Board",
+      risk: "AGGRESSIVE",
+      legs: 5,
+      sort: (a, b) => b.confidence - a.confidence,
+      filter: (p) => p.confidence >= Math.max(50, minConfidence - 10),
+      reasoning: "Five-leg build using only correlation-checked live markets.",
     },
   ];
 
+  const usedSignatures = new Set<string>();
   for (const recipe of recipes) {
     const candidates = eligible.filter(recipe.filter).sort(recipe.sort);
     const legs: Pick[] = [];
-    const usedGames = new Set<string>();
-    const usedMarketTypes = new Map<string, number>();
 
-    for (const c of candidates) {
-      // Correlation control: one leg per game, limited repeats per market family.
-      if (usedGames.has(c.gameId)) continue;
-      const family = c.marketLabel.replace(/[\d.]+/g, "").trim();
-      if ((usedMarketTypes.get(family) ?? 0) >= 2) continue;
-      legs.push(c);
-      usedGames.add(c.gameId);
-      usedMarketTypes.set(family, (usedMarketTypes.get(family) ?? 0) + 1);
+    for (const candidate of candidates) {
+      if (!compatibleWithCombo(legs, candidate)) continue;
+      legs.push(candidate);
       if (legs.length === recipe.legs) break;
     }
 
-    // If we cannot fill the recipe with qualifying picks, do NOT manufacture legs.
     if (legs.length < recipe.legs) continue;
+    const signature = legs.map((leg) => leg.marketId).sort().join("|");
+    if (usedSignatures.has(signature)) continue;
+    usedSignatures.add(signature);
 
-    const modelProbability = legs.reduce((acc, l) => acc * l.probability, 1);
-    const decimal = legs.reduce((acc, l) => acc * americanToDecimal(l.odds!.american), 1);
+    const modelProbability = legs.reduce((acc, leg) => acc * leg.probability, 1);
+    const decimal = legs.reduce((acc, leg) => acc * americanToDecimal(leg.odds?.american ?? -110), 1);
     const combined = decimalToAmerican(decimal);
     const impliedProbability = 1 / decimal;
-    const confidence = Math.round(
-      legs.reduce((acc, l) => acc + l.confidence, 0) / legs.length -
-        (legs.length - 2) * 2,
-    );
+    const avgConfidence = legs.reduce((acc, leg) => acc + leg.confidence, 0) / legs.length;
+    const confidence = Math.round(clamp(avgConfidence - (legs.length - 2) * 3, 0, 100));
+    const teams = legs.map((leg) => `${leg.teamAbbreviation} vs ${leg.opponentAbbreviation}`).join(", ");
 
     combos.push({
-      id: `combo-${recipe.risk.toLowerCase()}-${recipe.legs}`,
+      id: comboIdFor(recipe.risk, legs),
       name: recipe.name,
       risk: recipe.risk,
       legs,
       combinedOdds: combined,
       modelProbability,
       impliedProbability,
-      confidence: clamp(confidence, 0, 100),
+      confidence,
       estimatedEdge: modelProbability - impliedProbability,
-      reasoning: `${recipe.reasoning} Games: ${legs
-        .map((l) => {
-          const g = gameById.get(l.gameId);
-          return g ? `${g.awayTeam.abbreviation}@${g.homeTeam.abbreviation}` : l.gameId;
-        })
-        .join(", ")}.`,
+      reasoning: `${recipe.reasoning} Matchups: ${teams}. Higher-risk categories are labeled by volatility and leg count, not presented as safe.`,
       createdAt: nowIso,
     });
   }
 
-  return combos.sort((a, b) => b.confidence - a.confidence);
+  return combos.sort((a, b) => {
+    const confidenceDelta = b.confidence - a.confidence;
+    if (confidenceDelta !== 0) return confidenceDelta;
+    return (b.estimatedEdge ?? -1) - (a.estimatedEdge ?? -1);
+  });
 }

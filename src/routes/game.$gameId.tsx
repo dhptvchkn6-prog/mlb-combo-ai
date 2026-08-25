@@ -2,7 +2,7 @@ import { createFileRoute, useParams } from "@tanstack/react-router";
 
 import {
   BackButton,
-  DemoBanner,
+  DataStatusBanner,
   LoadingCards,
   QualityBadge,
   Screen,
@@ -52,7 +52,7 @@ function GameDetails() {
   return (
     <Screen>
       <BackButton />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       {isLoading ? <LoadingCards /> : null}
       {isError ? (

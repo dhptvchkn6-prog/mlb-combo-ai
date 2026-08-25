@@ -74,18 +74,14 @@ export function BackButton({ label = "Back" }: { label?: string }) {
   );
 }
 
-export function DemoBanner({ update }: { update: DataUpdate | null }) {
-  const live = update?.mode === "LIVE";
-  if (live) return null;
+export function DataStatusBanner({ update }: { update: DataUpdate | null }) {
+  if (!update) return null;
   return (
-    <section
-      role="status"
-      className="rounded-xl border-2 border-dashed border-warning bg-warning/10 px-4 py-3"
-    >
-      <p className="text-base font-black uppercase tracking-widest text-warning">Demo Mode</p>
-      <p className="text-sm font-semibold text-warning/90">Live data not connected</p>
+    <section role="status" className="rounded-xl border border-primary/40 bg-primary/10 px-4 py-3">
+      <p className="text-[11px] font-black uppercase tracking-[0.25em] text-primary">Live Data</p>
+      <p className="mt-1 text-sm font-semibold">{update.message}</p>
       <p className="mt-1 text-xs text-muted-foreground">
-        {update?.message ?? "All games, players, odds and statistics below are fictional samples."}
+        Last updated {new Date(update.lastUpdatedAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}
       </p>
     </section>
   );

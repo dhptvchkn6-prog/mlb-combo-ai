@@ -1,67 +1,52 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import { buildDemoDataset } from "./demo-data";
+import { fetchLiveBoard } from "./api/providers.server";
 import { runModel } from "./model/engine";
-import { fetchLiveBoard, getProviderStatus, isLiveConnected } from "./api/providers.server";
 import type { BoardPayload } from "./types";
 
-const inputSchema = z.object({
-  requestedMode: z.enum(["LIVE", "DEMO"]).default("DEMO"),
-  minConfidence: z.number().min(0).max(100).default(55),
-});
-
 export const getBoard = createServerFn({ method: "GET" })
-  .inputValidator((data: unknown) => inputSchema.parse(data ?? {}))
+  .inputValidator((data: unknown) =>
+    z
+      .object({
+        requestedMode: z.literal("LIVE").default("LIVE"),
+        minConfidence: z.number().min(0).max(100).default(55),
+      })
+      .parse(data ?? {}),
+  )
   .handler(async ({ data }): Promise<BoardPayload> => {
-    const nowIso = new Date().toISOString();
-    const sources = getProviderStatus();
-    const live = isLiveConnected();
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const dateIso = nowIso.slice(0, 10);
+    const result = await fetchLiveBoard(dateIso, nowIso);
 
-    if (data.requestedMode === "LIVE") {
-      const result = await fetchLiveBoard();
-      if (!result.connected || !result.data) {
-        // Never silently fall back to fake "live" data.
-        return {
-          update: {
-            mode: "DEMO",
-            liveConnected: live,
-            lastUpdatedAt: nowIso,
-            sources,
-            message: "Live data isn't connected yet. Showing demo data, clearly labeled.",
-          },
-          games: [],
-          players: [],
-          statistics: [],
-          markets: [],
-          picks: [],
-          combos: [],
-        };
-      }
+    if (!result.connected || !result.data) {
+      throw new Error(result.error ?? "Live MLB data is unavailable.");
     }
 
-    const demo = buildDemoDataset(nowIso);
     const { picks, combos } = runModel({
-      games: demo.games,
-      players: demo.players,
-      statistics: demo.statistics,
-      markets: demo.markets,
+      games: result.data.games,
+      players: result.data.players,
+      statistics: result.data.statistics,
+      teamStatistics: result.data.teamStatistics,
+      markets: result.data.markets,
       nowIso,
       minConfidence: data.minConfidence,
     });
 
     return {
       update: {
-        mode: "DEMO",
-        liveConnected: live,
+        mode: "LIVE",
+        liveConnected: true,
         lastUpdatedAt: nowIso,
-        sources,
-        message: "Demo dataset. All names, odds and statistics are fictional samples.",
+        sources: result.data.sources,
+        message: "Live MLB schedule, odds, injury and statistics data loaded.",
       },
-      games: demo.games,
-      players: demo.players,
-      statistics: demo.statistics,
-      markets: demo.markets,
+      games: result.data.games,
+      players: result.data.players,
+      statistics: result.data.statistics,
+      teamStatistics: result.data.teamStatistics,
+      markets: result.data.markets,
       picks,
       combos,
     };

@@ -10,7 +10,8 @@ import {
   Screen,
   StatePanel,
 } from "@/components/app-chrome";
-import { ComboCard, LegRow } from "@/components/combo-card";
+import { ComboCard } from "@/components/combo-card";
+import { PickLeg } from "@/components/pick-leg";
 import { useBoard } from "@/lib/use-board";
 import { useSettings } from "@/lib/settings";
 import type { RiskCategory } from "@/lib/types";
@@ -29,7 +30,7 @@ export const Route = createFileRoute("/")({
       {
         property: "og:description",
         content:
-          "Ranked MLB statistical combinations by model probability and estimated value. Demo mode until live data is connected.",
+          "Ranked MLB statistical combinations by model probability and estimated value. Live odds, schedules and statistics are refreshed from connected data sources.",
       },
     ],
   }),
@@ -79,7 +80,7 @@ function HomeScreen() {
         </p>
       </header>
 
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       <section className="app-card p-4">
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
@@ -94,7 +95,7 @@ function HomeScreen() {
             <p className="text-xs text-muted-foreground">
               Data status:{" "}
               <span className="font-bold text-warning">
-                {board?.update.liveConnected ? "LIVE" : "DEMO (live not connected)"}
+                {board?.update.liveConnected ? "LIVE" : "OFFLINE"}
               </span>
             </p>
             <p className="text-xs text-muted-foreground">
@@ -170,7 +171,7 @@ function HomeScreen() {
           </div>
           <div className="mt-3 space-y-2">
             {best.legs.map((leg, i) => (
-              <LegRow key={leg.id} leg={leg} index={i} />
+              <PickLeg key={leg.id} leg={leg} index={i} />
             ))}
           </div>
           <Link
