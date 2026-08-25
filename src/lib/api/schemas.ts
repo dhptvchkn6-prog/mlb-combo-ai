@@ -34,9 +34,13 @@ export const unknownArray = z
  * Parse `value` with `schema`, returning `fallback` when the payload does not
  * match. External APIs change without notice, so validation never throws.
  */
-export function safeParse<T>(schema: z.ZodType<T>, value: unknown, fallback: T): T {
+export function safeParse<S extends z.ZodTypeAny>(
+  schema: S,
+  value: unknown,
+  fallback: z.output<S>,
+): z.output<S> {
   const result = schema.safeParse(value);
-  return result.success ? result.data : fallback;
+  return result.success ? (result.data as z.output<S>) : fallback;
 }
 
 /** Reads a stat field off an unvalidated container as a strict `number | null`. */
