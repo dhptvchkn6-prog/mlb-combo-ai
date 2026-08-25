@@ -40,7 +40,10 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     try {
       const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) setSettings({ ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<Settings>) });
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<Settings>;
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed, dataMode: "LIVE" });
+      }
     } catch {
       /* ignore malformed storage */
     }

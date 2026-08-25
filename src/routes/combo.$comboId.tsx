@@ -1,21 +1,16 @@
 import { createFileRoute, useParams } from "@tanstack/react-router";
-import { ChevronDown } from "lucide-react";
-import { useState } from "react";
-
 import {
   BackButton,
   ConfidenceMeter,
-  DemoBanner,
+  DataStatusBanner,
   LoadingCards,
-  QualityBadge,
   RiskBadge,
   Screen,
   StatePanel,
 } from "@/components/app-chrome";
+import { PickLeg } from "@/components/pick-leg";
 import { formatAmerican, formatPct, formatSignedPct } from "@/lib/odds";
 import { useBoard } from "@/lib/use-board";
-import type { Pick } from "@/lib/types";
-
 export const Route = createFileRoute("/combo/$comboId")({
   head: () => ({
     meta: [
@@ -35,91 +30,6 @@ export const Route = createFileRoute("/combo/$comboId")({
   component: ComboDetails,
 });
 
-function LegDetail({ leg, index }: { leg: Pick; index: number }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <article className="app-card p-4">
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
-        <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-            Leg {index + 1}
-          </p>
-          <p className="truncate text-base font-black">{leg.selection}</p>
-          <p className="text-xs text-muted-foreground">{leg.marketLabel}</p>
-        </div>
-        <QualityBadge quality={leg.dataQuality} />
-      </div>
-
-      <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <div className="rounded-lg bg-surface-2/70 p-2">
-          <dt className="text-muted-foreground">Line</dt>
-          <dd className="font-black tabular-nums">{leg.line ?? "—"}</dd>
-        </div>
-        <div className="rounded-lg bg-surface-2/70 p-2">
-          <dt className="text-muted-foreground">Odds</dt>
-          <dd className="font-black tabular-nums">{formatAmerican(leg.odds?.american)}</dd>
-        </div>
-        <div className="rounded-lg bg-surface-2/70 p-2">
-          <dt className="text-muted-foreground">Model probability</dt>
-          <dd className="font-black tabular-nums text-primary">{formatPct(leg.probability)}</dd>
-        </div>
-        <div className="rounded-lg bg-surface-2/70 p-2">
-          <dt className="text-muted-foreground">Implied probability</dt>
-          <dd className="font-black tabular-nums">{formatPct(leg.impliedProbability)}</dd>
-        </div>
-        <div className="col-span-2 rounded-lg bg-surface-2/70 p-2">
-          <dt className="text-muted-foreground">Estimated edge</dt>
-          <dd className="font-black tabular-nums">{formatSignedPct(leg.edge)}</dd>
-        </div>
-      </dl>
-
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="tap-scale mt-3 flex min-h-[48px] w-full items-center justify-between rounded-xl border border-border bg-surface px-4 text-sm font-bold"
-      >
-        Why this pick?
-        <ChevronDown
-          aria-hidden
-          className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-
-      {open ? (
-        <dl className="mt-2 rounded-xl border border-border bg-surface-2/50 p-3">
-          {leg.reasoning.map((f) => (
-            <div
-              key={f.label}
-              className="flex items-start justify-between gap-3 border-b border-border/50 py-2 last:border-0"
-            >
-              <dt className="text-xs text-muted-foreground">{f.label}</dt>
-              <dd
-                className={`text-right text-xs font-semibold ${
-                  !f.available
-                    ? "text-muted-foreground italic"
-                    : f.impact === "POSITIVE"
-                      ? "text-primary"
-                      : f.impact === "NEGATIVE"
-                        ? "text-warning"
-                        : ""
-                }`}
-              >
-                {f.value}
-                {f.available && f.impact !== "NEUTRAL" ? (
-                  <span className="ml-1 text-[10px] uppercase">
-                    ({f.impact === "POSITIVE" ? "supports" : "caution"})
-                  </span>
-                ) : null}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
-    </article>
-  );
-}
-
 function ComboDetails() {
   const { comboId } = useParams({ from: "/combo/$comboId" });
   const { board, isLoading, isError, retry } = useBoard();
@@ -128,7 +38,7 @@ function ComboDetails() {
   return (
     <Screen>
       <BackButton />
-      <DemoBanner update={board?.update ?? null} />
+      <DataStatusBanner update={board?.update ?? null} />
 
       {isLoading ? <LoadingCards /> : null}
       {isError ? (
@@ -188,7 +98,7 @@ function ComboDetails() {
 
           <div className="space-y-3">
             {combo.legs.map((leg, i) => (
-              <LegDetail key={leg.id} leg={leg} index={i} />
+              <PickLeg key={leg.id} leg={leg} index={i} defaultOpen />
             ))}
           </div>
 
