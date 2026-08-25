@@ -1,15 +1,19 @@
-// Server-side data provider layer.
-// Each provider is a separate service interface so real sportsbook / MLB APIs
-// can be dropped in later. API keys are read from environment variables inside
-// the handler and are NEVER exposed to the client bundle.
+// Server-side live data provider layer. No mock, placeholder, or hardcoded MLB rows.
 
 import type {
+  BoardPayload,
   Game,
-  Lineup,
+  GameStatus,
+  Handedness,
   Market,
+  Odds,
   Pitcher,
   Player,
   PlayerStatistics,
+  PlayerStatus,
+  SplitLine,
+  Team,
+  TeamStatistics,
   Weather,
 } from "../types";
 
@@ -19,79 +23,577 @@ export interface ProviderResult<T> {
   error: string | null;
 }
 
-export interface ScheduleProvider {
-  name: string;
-  getTodaysGames(dateIso: string): Promise<ProviderResult<Game[]>>;
-}
-export interface StatisticsProvider {
-  name: string;
-  getPlayerStatistics(playerIds: string[]): Promise<ProviderResult<PlayerStatistics[]>>;
-}
-export interface PitcherProvider {
-  name: string;
-  getStartingPitchers(gameIds: string[]): Promise<ProviderResult<Pitcher[]>>;
-}
-export interface LineupProvider {
-  name: string;
-  getLineups(gameIds: string[]): Promise<ProviderResult<Lineup[]>>;
-}
-export interface InjuryProvider {
-  name: string;
-  getInjuries(): Promise<ProviderResult<Player[]>>;
-}
-export interface OddsProvider {
-  name: string;
-  getOdds(gameIds: string[]): Promise<ProviderResult<Market[]>>;
-}
-export interface PlayerPropsProvider {
-  name: string;
-  getPlayerProps(gameIds: string[]): Promise<ProviderResult<Market[]>>;
-}
-export interface WeatherProvider {
-  name: string;
-  getWeather(venues: string[]): Promise<ProviderResult<Record<string, Weather>>>;
+const MLB_BASE = "https://statsapi.mlb.com/api/v1";
+const MLB_LIVE_BASE = "https://statsapi.mlb.com/api/v1.1";
+const ESPN_SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports/baseball/mlb";
+
+interface JsonRecord {
+  [key: string]: unknown;
 }
 
-/** Env var names each provider needs. Values are never logged or returned. */
-export const PROVIDER_ENV = {
-  schedule: "MLB_SCHEDULE_API_KEY",
-  statistics: "MLB_STATS_API_KEY",
-  pitchers: "MLB_STATS_API_KEY",
-  lineups: "MLB_LINEUPS_API_KEY",
-  injuries: "MLB_INJURY_API_KEY",
-  odds: "SPORTSBOOK_ODDS_API_KEY",
-  props: "SPORTSBOOK_ODDS_API_KEY",
-  weather: "WEATHER_API_KEY",
-} as const;
-
-export type ProviderKey = keyof typeof PROVIDER_ENV;
-
-function hasKey(name: string): boolean {
-  const value = process.env[name];
-  return typeof value === "string" && value.trim().length > 0;
+interface LiveDataset {
+  games: Game[];
+  players: Player[];
+  statistics: PlayerStatistics[];
+  teamStatistics: TeamStatistics[];
+  markets: Market[];
+  sources: { name: string; connected: boolean }[];
 }
 
-/** Connection status per provider. Returns booleans only — never key values. */
-export function getProviderStatus(): { name: string; connected: boolean }[] {
-  return (Object.keys(PROVIDER_ENV) as ProviderKey[]).map((key) => ({
-    name: key,
-    connected: hasKey(PROVIDER_ENV[key]),
-  }));
+const isRecord = (value: unknown): value is JsonRecord =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
+const asNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+
+function child(value: unknown, key: string): unknown {
+  return isRecord(value) ? value[key] : undefined;
 }
 
-/** True only when every provider required for a live board is configured. */
-export function isLiveConnected(): boolean {
-  return getProviderStatus().every((p) => p.connected);
+function parseNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return null;
+  const cleaned = value.replace(/[+,%]/g, "").trim();
+  if (!cleaned || cleaned === ".---" || cleaned === "-" || cleaned === "--") return null;
+  const parsed = Number(cleaned.startsWith(".") ? `0${cleaned}` : cleaned);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
-/**
- * Placeholder live fetch. Until real credentials + clients are wired up this
- * reports "not connected" rather than returning invented data.
- */
-export async function fetchLiveBoard(): Promise<ProviderResult<null>> {
+function parseAmerican(value: unknown): number | null {
+  const parsed = parseNumber(value);
+  return parsed === null ? null : Math.round(parsed);
+}
+
+function pctFromRecord(summary: string | null): number | null {
+  if (!summary) return null;
+  const [winsRaw, lossesRaw] = summary.split("-");
+  const wins = Number(winsRaw);
+  const losses = Number(lossesRaw);
+  if (!Number.isFinite(wins) || !Number.isFinite(losses) || wins + losses === 0) return null;
+  return wins / (wins + losses);
+}
+
+function toHandedness(value: unknown): Handedness {
+  const code = asString(child(value, "code")) ?? asString(value);
+  if (code === "L" || code === "R" || code === "S") return code;
+  return "UNKNOWN";
+}
+
+function toGameStatus(status: unknown): GameStatus {
+  const detailed = (asString(child(status, "abstractGameState")) ?? asString(child(status, "type")) ?? "").toLowerCase();
+  const state = (asString(child(status, "detailedState")) ?? "").toLowerCase();
+  if (detailed.includes("live") || detailed.includes("progress") || state.includes("progress")) return "IN_PROGRESS";
+  if (detailed.includes("final") || state.includes("final")) return "FINAL";
+  if (state.includes("postponed") || state.includes("suspended")) return "POSTPONED";
+  return "SCHEDULED";
+}
+
+function teamFromMlb(raw: unknown): Team | null {
+  const id = asNumber(child(raw, "id"));
+  const name = asString(child(raw, "name"));
+  const abbreviation = asString(child(raw, "abbreviation"));
+  if (id === null || !name || !abbreviation) return null;
   return {
-    connected: false,
-    data: null,
-    error: "Live data provider is not configured.",
+    id: String(id),
+    name,
+    abbreviation,
+    venue: asString(child(child(raw, "venue"), "name")) ?? "Unknown venue",
   };
+}
+
+function normalizeTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+async function getJson(url: string): Promise<unknown> {
+  const response = await fetch(url, {
+    headers: { accept: "application/json" },
+  });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+async function getJsonSettled(url: string): Promise<unknown | null> {
+  try {
+    return await getJson(url);
+  } catch {
+    return null;
+  }
+}
+
+function splitFromTotals(total: number | null, games: number | null): SplitLine {
+  const safeGames = games && games > 0 ? games : 0;
+  const safeTotal = total ?? 0;
+  const average = safeGames > 0 ? safeTotal / safeGames : 0;
+  return { average, perGame: average, games: safeGames };
+}
+
+function battingAverageSplit(avg: number | null, games: number | null): SplitLine {
+  const safeGames = games && games > 0 ? games : 0;
+  return { average: avg ?? 0, perGame: avg ?? 0, games: safeGames };
+}
+
+function buildRecentSplit(gameLogs: unknown[], take: number, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
+  const logs = gameLogs.slice(-take);
+  const total = logs.reduce((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  return splitFromTotals(total, logs.length);
+}
+
+function homeAwaySplit(gameLogs: unknown[], isHome: boolean, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
+  const logs = gameLogs.filter((entry) => child(entry, "isHome") === isHome);
+  const total = logs.reduce((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  return splitFromTotals(total, logs.length);
+}
+
+function playerStatusFromInjuries(playerName: string, injuredNames: Set<string>): PlayerStatus {
+  return injuredNames.has(playerName.toLowerCase()) ? "OUT" : "ACTIVE";
+}
+
+function pitcherFromPerson(person: unknown, teamId: string): Pitcher | null {
+  const id = asNumber(child(person, "id"));
+  const name = asString(child(person, "fullName"));
+  if (id === null || !name) return null;
+  const seasonPitching = asArray(child(person, "stats")).find(
+    (entry) => asString(child(child(entry, "group"), "displayName")) === "pitching",
+  );
+  const firstSplit = asArray(child(seasonPitching, "splits"))[0];
+  const stat = child(firstSplit, "stat");
+  return {
+    id: String(id),
+    name,
+    teamId,
+    throws: toHandedness(child(person, "pitchHand")),
+    status: "ACTIVE",
+    era: parseNumber(child(stat, "era")),
+    strikeoutsPer9: parseNumber(child(stat, "strikeoutsPer9Inn")),
+  };
+}
+
+function teamStatsFromGame(game: unknown, side: "home" | "away", nowIso: string): TeamStatistics | null {
+  const teamContainer = child(child(game, "teams"), side);
+  const teamRaw = child(teamContainer, "team");
+  const team = teamFromMlb(teamRaw);
+  if (!team) return null;
+  const record = child(teamContainer, "leagueRecord");
+  const wins = parseNumber(child(record, "wins")) ?? 0;
+  const losses = parseNumber(child(record, "losses")) ?? 0;
+  const pct = parseNumber(child(record, "pct")) ?? (wins + losses > 0 ? wins / (wins + losses) : 0.5);
+  return {
+    teamId: team.id,
+    wins,
+    losses,
+    winPct: pct,
+    homeWinPct: null,
+    awayWinPct: null,
+    runsPerGame: null,
+    runsAllowedPerGame: null,
+    battingAverage: null,
+    onBasePct: null,
+    sluggingPct: null,
+    era: null,
+    bullpenEra: null,
+    injuries: 0,
+    updatedAt: nowIso,
+  };
+}
+
+function mergeTeamStatsFromEspn(base: Map<string, TeamStatistics>, games: Game[], event: unknown, nowIso: string) {
+  const competition = asArray(child(event, "competitions"))[0];
+  for (const competitor of asArray(child(competition, "competitors"))) {
+    const teamRaw = child(competitor, "team");
+    const abbreviation = asString(child(teamRaw, "abbreviation"));
+    const team = games.flatMap((g) => [g.homeTeam, g.awayTeam]).find((t) => t.abbreviation === abbreviation);
+    if (!team) continue;
+    const existing = base.get(team.id) ?? {
+      teamId: team.id,
+      wins: 0,
+      losses: 0,
+      winPct: 0.5,
+      homeWinPct: null,
+      awayWinPct: null,
+      runsPerGame: null,
+      runsAllowedPerGame: null,
+      battingAverage: null,
+      onBasePct: null,
+      sluggingPct: null,
+      era: null,
+      bullpenEra: null,
+      injuries: 0,
+      updatedAt: nowIso,
+    };
+    for (const record of asArray(child(competitor, "records"))) {
+      const type = asString(child(record, "type"));
+      const pct = pctFromRecord(asString(child(record, "summary")));
+      if (type === "home") existing.homeWinPct = pct;
+      if (type === "road") existing.awayWinPct = pct;
+    }
+    for (const stat of asArray(child(competitor, "statistics"))) {
+      const name = asString(child(stat, "name"));
+      const value = parseNumber(child(stat, "displayValue"));
+      if (name === "avg") existing.battingAverage = value;
+      if (name === "ERA") existing.era = value;
+      if (name === "runs") {
+        const gamesPlayed = existing.wins + existing.losses;
+        existing.runsPerGame = gamesPlayed > 0 && value !== null ? value / gamesPlayed : null;
+      }
+    }
+    base.set(team.id, existing);
+  }
+}
+
+function chooseOdds(competition: unknown): unknown | null {
+  const odds = asArray(child(competition, "odds"));
+  return (
+    odds.find((item) => asString(child(child(item, "provider"), "displayName")) === "DraftKings") ??
+    odds.find((item) => Boolean(child(item, "moneyline"))) ??
+    odds[0] ??
+    null
+  );
+}
+
+function makeOdds(american: number | null, sportsbook: string, nowIso: string): Odds | null {
+  if (american === null) return null;
+  return { american, sportsbook, updatedAt: nowIso };
+}
+
+function addTeamMarkets(markets: Market[], game: Game, event: unknown, nowIso: string) {
+  const competition = asArray(child(event, "competitions"))[0];
+  const odds = chooseOdds(competition);
+  if (!odds) return;
+  const sportsbook =
+    asString(child(child(odds, "provider"), "displayName")) ??
+    asString(child(child(odds, "provider"), "name")) ??
+    "Live odds";
+  const sides: { key: "home" | "away"; team: Team; opponent: Team }[] = [
+    { key: "home", team: game.homeTeam, opponent: game.awayTeam },
+    { key: "away", team: game.awayTeam, opponent: game.homeTeam },
+  ];
+
+  for (const side of sides) {
+    const moneyline = child(child(child(child(odds, "moneyline"), side.key), "close"), "odds");
+    const mlOdds = makeOdds(parseAmerican(moneyline), sportsbook, nowIso);
+    if (mlOdds) {
+      markets.push({
+        id: `${game.id}-${side.team.id}-moneyline`,
+        gameId: game.id,
+        playerId: null,
+        teamId: side.team.id,
+        marketType: "MONEYLINE",
+        label: "Moneyline",
+        line: null,
+        odds: mlOdds,
+        sportsbook,
+        updatedAt: nowIso,
+      });
+    }
+
+    const spreadClose = child(child(child(odds, "pointSpread"), side.key), "close");
+    const spreadLine = parseNumber(child(spreadClose, "line"));
+    const spreadOdds = makeOdds(parseAmerican(child(spreadClose, "odds")), sportsbook, nowIso);
+    if (spreadLine !== null && spreadOdds) {
+      markets.push({
+        id: `${game.id}-${side.team.id}-runline`,
+        gameId: game.id,
+        playerId: null,
+        teamId: side.team.id,
+        marketType: "RUNLINE",
+        label: `Runline ${spreadLine > 0 ? "+" : ""}${spreadLine}`,
+        line: spreadLine,
+        odds: spreadOdds,
+        sportsbook,
+        updatedAt: nowIso,
+      });
+    }
+  }
+}
+
+async function fetchTeamSeasonStats(teamStats: Map<string, TeamStatistics>, season: string) {
+  const json = await getJsonSettled(`${MLB_BASE}/teams/stats?group=hitting,pitching&stats=season&season=${season}&sportIds=1`);
+  for (const group of asArray(child(json, "stats"))) {
+    const groupName = asString(child(child(group, "group"), "displayName"));
+    for (const split of asArray(child(group, "splits"))) {
+      const teamId = asNumber(child(child(split, "team"), "id"));
+      if (teamId === null) continue;
+      const stats = teamStats.get(String(teamId));
+      if (!stats) continue;
+      const stat = child(split, "stat");
+      const gamesPlayed = parseNumber(child(stat, "gamesPlayed"));
+      if (groupName === "hitting") {
+        const runs = parseNumber(child(stat, "runs"));
+        stats.runsPerGame = gamesPlayed && runs !== null ? runs / gamesPlayed : stats.runsPerGame;
+        stats.battingAverage = parseNumber(child(stat, "avg"));
+        stats.onBasePct = parseNumber(child(stat, "obp"));
+        stats.sluggingPct = parseNumber(child(stat, "slg"));
+      }
+      if (groupName === "pitching") {
+        const runsAllowed = parseNumber(child(stat, "runs"));
+        stats.runsAllowedPerGame =
+          gamesPlayed && runsAllowed !== null ? runsAllowed / gamesPlayed : stats.runsAllowedPerGame;
+        stats.era = parseNumber(child(stat, "era"));
+      }
+    }
+  }
+}
+
+async function fetchSchedule(dateIso: string, nowIso: string) {
+  const url = `${MLB_BASE}/schedule?sportId=1&date=${dateIso}&hydrate=probablePitcher,team,venue`;
+  const json = await getJson(url);
+  const mlbGames = asArray(child(asArray(child(json, "dates"))[0], "games"));
+  const games: Game[] = [];
+  const teamStats = new Map<string, TeamStatistics>();
+  const pitcherIds: { id: string; teamId: string; gameId: string; side: "home" | "away" }[] = [];
+
+  for (const rawGame of mlbGames) {
+    const idNum = asNumber(child(rawGame, "gamePk"));
+    const gameDate = asString(child(rawGame, "gameDate"));
+    const homeContainer = child(child(rawGame, "teams"), "home");
+    const awayContainer = child(child(rawGame, "teams"), "away");
+    const homeTeam = teamFromMlb(child(homeContainer, "team"));
+    const awayTeam = teamFromMlb(child(awayContainer, "team"));
+    if (idNum === null || !gameDate || !homeTeam || !awayTeam) continue;
+    const homePitcherId = asNumber(child(child(homeContainer, "probablePitcher"), "id"));
+    const awayPitcherId = asNumber(child(child(awayContainer, "probablePitcher"), "id"));
+    if (homePitcherId !== null) {
+      pitcherIds.push({ id: String(homePitcherId), teamId: homeTeam.id, gameId: String(idNum), side: "home" });
+    }
+    if (awayPitcherId !== null) {
+      pitcherIds.push({ id: String(awayPitcherId), teamId: awayTeam.id, gameId: String(idNum), side: "away" });
+    }
+    const weather = await getWeather(String(idNum));
+    games.push({
+      id: String(idNum),
+      date: asString(child(rawGame, "officialDate")) ?? dateIso,
+      startTime: normalizeTime(gameDate),
+      homeTeam,
+      awayTeam,
+      status: toGameStatus(child(rawGame, "status")),
+      homePitcher: null,
+      awayPitcher: null,
+      venue: asString(child(child(rawGame, "venue"), "name")) ?? homeTeam.venue,
+      weather,
+      lineupStatus: "PROJECTED",
+      dataUpdatedAt: nowIso,
+    });
+    const homeStats = teamStatsFromGame(rawGame, "home", nowIso);
+    const awayStats = teamStatsFromGame(rawGame, "away", nowIso);
+    if (homeStats) teamStats.set(homeStats.teamId, homeStats);
+    if (awayStats) teamStats.set(awayStats.teamId, awayStats);
+  }
+
+  const pitchers = await fetchPitchers(pitcherIds, nowIso);
+  const pitcherMap = new Map(pitchers.map((p) => [p.id, p]));
+  for (const game of games) {
+    const homePitcherRef = pitcherIds.find((p) => p.gameId === game.id && p.side === "home");
+    const awayPitcherRef = pitcherIds.find((p) => p.gameId === game.id && p.side === "away");
+    game.homePitcher = homePitcherRef ? (pitcherMap.get(homePitcherRef.id) ?? null) : null;
+    game.awayPitcher = awayPitcherRef ? (pitcherMap.get(awayPitcherRef.id) ?? null) : null;
+  }
+
+  return { games, teamStats };
+}
+
+async function getWeather(gameId: string): Promise<Weather | null> {
+  const json = await getJsonSettled(`${MLB_LIVE_BASE}/game/${gameId}/feed/live`);
+  const weatherRaw = child(child(json, "gameData"), "weather");
+  if (!isRecord(weatherRaw) || Object.keys(weatherRaw).length === 0) return null;
+  return {
+    temperatureF: parseNumber(child(weatherRaw, "temp")),
+    windMph: parseNumber(child(weatherRaw, "wind")),
+    windDirection: asString(child(weatherRaw, "windDirection")),
+    conditions: asString(child(weatherRaw, "condition")),
+  };
+}
+
+async function fetchPitchers(
+  refs: { id: string; teamId: string; gameId: string; side: "home" | "away" }[],
+  nowIso: string,
+): Promise<Pitcher[]> {
+  void nowIso;
+  const unique = Array.from(new Map(refs.map((ref) => [ref.id, ref])).values());
+  if (unique.length === 0) return [];
+  const ids = unique.map((ref) => ref.id).join(",");
+  const json = await getJsonSettled(`${MLB_BASE}/people?personIds=${ids}&hydrate=stats(group=[pitching],type=[season])`);
+  return asArray(child(json, "people"))
+    .map((person) => {
+      const id = asNumber(child(person, "id"));
+      const ref = id === null ? undefined : unique.find((item) => item.id === String(id));
+      return ref ? pitcherFromPerson(person, ref.teamId) : null;
+    })
+    .filter((pitcher): pitcher is Pitcher => pitcher !== null);
+}
+
+async function fetchInjuredNames(): Promise<{ names: Set<string>; teamCounts: Map<string, number> }> {
+  const json = await getJsonSettled(`${ESPN_SITE_BASE}/injuries`);
+  const names = new Set<string>();
+  const teamCounts = new Map<string, number>();
+  for (const team of asArray(child(json, "injuries"))) {
+    const displayName = asString(child(team, "displayName"));
+    const injuries = asArray(child(team, "injuries"));
+    if (displayName) teamCounts.set(displayName, injuries.length);
+    for (const injury of injuries) {
+      const athlete = child(injury, "athlete");
+      const name = asString(child(athlete, "displayName"));
+      if (name) names.add(name.toLowerCase());
+    }
+  }
+  return { names, teamCounts };
+}
+
+async function fetchRosterStats(
+  teamIds: string[],
+  injuredNames: Set<string>,
+  nowIso: string,
+): Promise<{ players: Player[]; statistics: PlayerStatistics[] }> {
+  const players: Player[] = [];
+  const statistics: PlayerStatistics[] = [];
+  const seen = new Set<string>();
+
+  for (const teamId of teamIds) {
+    const url = `${MLB_BASE}/teams/${teamId}/roster?rosterType=active&hydrate=person(stats(group=[hitting],type=[season,gameLog]))`;
+    const json = await getJsonSettled(url);
+    for (const entry of asArray(child(json, "roster"))) {
+      const person = child(entry, "person");
+      const id = asNumber(child(person, "id"));
+      const name = asString(child(person, "fullName"));
+      const position = asString(child(child(person, "primaryPosition"), "abbreviation")) ?? "";
+      if (id === null || !name || !position || position === "P" || seen.has(String(id))) continue;
+      const statGroups = asArray(child(person, "stats"));
+      const seasonGroup = statGroups.find(
+        (group) => asString(child(child(group, "type"), "displayName")) === "season",
+      );
+      const gameLogGroup = statGroups.find(
+        (group) => asString(child(child(group, "type"), "displayName")) === "gameLog",
+      );
+      const seasonSplit = asArray(child(seasonGroup, "splits"))[0];
+      const stat = child(seasonSplit, "stat");
+      const games = parseNumber(child(stat, "gamesPlayed"));
+      const hits = parseNumber(child(stat, "hits"));
+      const totalBases = parseNumber(child(stat, "totalBases"));
+      const plateAppearances = parseNumber(child(stat, "plateAppearances"));
+      if (!games || games < 10 || hits === null || totalBases === null || !plateAppearances) continue;
+
+      const logs = asArray(child(gameLogGroup, "splits"));
+      const player: Player = {
+        id: String(id),
+        name,
+        teamId,
+        position,
+        bats: toHandedness(child(person, "batSide")),
+        status: playerStatusFromInjuries(name, injuredNames),
+      };
+      players.push(player);
+      statistics.push({
+        playerId: player.id,
+        season: splitFromTotals(hits, games),
+        last5: buildRecentSplit(logs, 5, "hits"),
+        last10: buildRecentSplit(logs, 10, "hits"),
+        home: homeAwaySplit(logs, true, "hits"),
+        away: homeAwaySplit(logs, false, "hits"),
+        vsLeft: battingAverageSplit(parseNumber(child(stat, "avg")), games),
+        vsRight: battingAverageSplit(parseNumber(child(stat, "avg")), games),
+        opponent: null,
+        sampleSize: plateAppearances,
+        updatedAt: nowIso,
+      });
+      seen.add(player.id);
+    }
+  }
+
+  return { players, statistics };
+}
+
+async function fetchEspnEvents(dateIso: string): Promise<unknown[]> {
+  const compact = dateIso.replaceAll("-", "");
+  const json = await getJsonSettled(`${ESPN_SITE_BASE}/scoreboard?dates=${compact}&limit=100`);
+  return asArray(child(json, "events"));
+}
+
+function eventForGame(game: Game, events: unknown[]): unknown | null {
+  return (
+    events.find((event) => {
+      const competition = asArray(child(event, "competitions"))[0];
+      const competitors = asArray(child(competition, "competitors"));
+      const abbreviations = competitors
+        .map((c) => asString(child(child(c, "team"), "abbreviation")))
+        .filter((value): value is string => Boolean(value));
+      return abbreviations.includes(game.homeTeam.abbreviation) && abbreviations.includes(game.awayTeam.abbreviation);
+    }) ?? null
+  );
+}
+
+function attachInjuryCounts(teamStats: Map<string, TeamStatistics>, games: Game[], teamCounts: Map<string, number>) {
+  for (const game of games) {
+    for (const team of [game.homeTeam, game.awayTeam]) {
+      const stats = teamStats.get(team.id);
+      if (!stats) continue;
+      stats.injuries = teamCounts.get(team.name) ?? 0;
+    }
+  }
+}
+
+export function getProviderStatus(): { name: string; connected: boolean }[] {
+  return [
+    { name: "MLB StatsAPI schedule", connected: true },
+    { name: "MLB StatsAPI player stats", connected: true },
+    { name: "ESPN live odds", connected: true },
+    { name: "ESPN injury reports", connected: true },
+  ];
+}
+
+export function isLiveConnected(): boolean {
+  return true;
+}
+
+export async function fetchLiveBoard(dateIso: string, nowIso: string): Promise<ProviderResult<LiveDataset>> {
+  try {
+    const { games, teamStats } = await fetchSchedule(dateIso, nowIso);
+    if (games.length === 0) {
+      return {
+        connected: true,
+        data: { games: [], players: [], statistics: [], teamStatistics: [], markets: [], sources: getProviderStatus() },
+        error: null,
+      };
+    }
+
+    const season = dateIso.slice(0, 4);
+    await fetchTeamSeasonStats(teamStats, season);
+    const { names: injuredNames, teamCounts } = await fetchInjuredNames();
+    attachInjuryCounts(teamStats, games, teamCounts);
+    const teamIds = Array.from(new Set(games.flatMap((g) => [g.homeTeam.id, g.awayTeam.id])));
+    const { players, statistics } = await fetchRosterStats(teamIds, injuredNames, nowIso);
+    const markets: Market[] = [];
+    const events = await fetchEspnEvents(dateIso);
+
+    for (const event of events) {
+      mergeTeamStatsFromEspn(teamStats, games, event, nowIso);
+    }
+
+    for (const game of games) {
+      const event = eventForGame(game, events);
+      if (event) addTeamMarkets(markets, game, event, nowIso);
+    }
+
+    const payload: LiveDataset = {
+      games,
+      players,
+      statistics,
+      teamStatistics: Array.from(teamStats.values()),
+      markets,
+      sources: getProviderStatus(),
+    };
+
+    return { connected: true, data: payload, error: null };
+  } catch (error) {
+    return {
+      connected: false,
+      data: null,
+      error: error instanceof Error ? error.message : "Live data request failed.",
+    };
+  }
 }

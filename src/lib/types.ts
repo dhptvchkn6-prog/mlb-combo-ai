@@ -1,14 +1,14 @@
 // Core domain models for Pro Baseball Combos.
-// NOTE: These types describe both LIVE (future API) and DEMO data.
-// Every payload carries an explicit `mode` so demo data is never shown as live.
+// LIVE data only: schedules, odds, stats and injuries are sourced from connected APIs.
 
-export type DataMode = "LIVE" | "DEMO";
+export type DataMode = "LIVE";
 export type DataQuality = "HIGH" | "MEDIUM" | "LOW";
 export type RiskCategory = "SAFE" | "SMART" | "VALUE" | "AGGRESSIVE";
-export type Handedness = "L" | "R" | "S";
+export type Handedness = "L" | "R" | "S" | "UNKNOWN";
 export type PlayerStatus = "ACTIVE" | "QUESTIONABLE" | "OUT" | "UNKNOWN";
 export type GameStatus = "SCHEDULED" | "IN_PROGRESS" | "FINAL" | "POSTPONED";
 export type LineupStatus = "CONFIRMED" | "PROJECTED" | "UNAVAILABLE";
+export type SelectionType = "PLAYER_PROP" | "TEAM_BET";
 
 export interface Team {
   id: string;
@@ -71,7 +71,8 @@ export type MarketType =
   | "STRIKEOUTS_OVER"
   | "RUNS_RBI_OVER"
   | "TEAM_TOTAL_OVER"
-  | "MONEYLINE";
+  | "MONEYLINE"
+  | "RUNLINE";
 
 export interface Odds {
   american: number;
@@ -112,6 +113,24 @@ export interface PlayerStatistics {
   updatedAt: string;
 }
 
+export interface TeamStatistics {
+  teamId: string;
+  wins: number;
+  losses: number;
+  winPct: number;
+  homeWinPct: number | null;
+  awayWinPct: number | null;
+  runsPerGame: number | null;
+  runsAllowedPerGame: number | null;
+  battingAverage: number | null;
+  onBasePct: number | null;
+  sluggingPct: number | null;
+  era: number | null;
+  bullpenEra: number | null;
+  injuries: number;
+  updatedAt: string;
+}
+
 export interface Projection {
   marketId: string;
   expectedValue: number;
@@ -130,10 +149,26 @@ export interface Pick {
   id: string;
   marketId: string;
   gameId: string;
+  selectionType: SelectionType;
+  playerId: string | null;
+  playerName: string | null;
+  teamId: string;
+  teamName: string;
+  teamAbbreviation: string;
+  opponentTeamId: string;
+  opponentName: string;
+  opponentAbbreviation: string;
+  gameTime: string;
+  venue: string;
+  startingPitcher: string | null;
+  opposingPitcher: string | null;
   selection: string;
+  marketType: MarketType;
   marketLabel: string;
   line: number | null;
   odds: Odds | null;
+  projection: number | null;
+  projectionLabel: string;
   probability: number;
   impliedProbability: number | null;
   edge: number | null;
@@ -141,6 +176,12 @@ export interface Pick {
   risk: RiskCategory;
   reasoning: ProjectionFactor[];
   dataQuality: DataQuality;
+  seasonStats: string;
+  last5: string;
+  last10: string;
+  homeAwaySplit: string;
+  handednessMatchup: string;
+  dataFreshnessMinutes: number;
   updatedAt: string;
 }
 
@@ -171,6 +212,7 @@ export interface BoardPayload {
   games: Game[];
   players: Player[];
   statistics: PlayerStatistics[];
+  teamStatistics: TeamStatistics[];
   markets: Market[];
   picks: Pick[];
   combos: Combo[];
