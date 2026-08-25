@@ -134,6 +134,10 @@ function splitFromTotals(total: number | null, games: number | null): SplitLine 
   return { average, perGame: average, games: safeGames };
 }
 
+function addParsedStat(acc: number, statContainer: unknown, statName: "hits" | "totalBases" | "strikeOuts"): number {
+  return acc + (parseNumber(child(statContainer, statName)) ?? 0);
+}
+
 function battingAverageSplit(avg: number | null, games: number | null): SplitLine {
   const safeGames = games && games > 0 ? games : 0;
   return { average: avg ?? 0, perGame: avg ?? 0, games: safeGames };
@@ -141,13 +145,13 @@ function battingAverageSplit(avg: number | null, games: number | null): SplitLin
 
 function buildRecentSplit(gameLogs: unknown[], take: number, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
   const logs = gameLogs.slice(-take);
-  const total = logs.reduce<number>((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  const total = logs.reduce<number>((acc, entry) => addParsedStat(acc, child(entry, "stat"), statName), 0);
   return splitFromTotals(total, logs.length);
 }
 
 function homeAwaySplit(gameLogs: unknown[], isHome: boolean, statName: "hits" | "totalBases" | "strikeOuts"): SplitLine {
   const logs = gameLogs.filter((entry) => child(entry, "isHome") === isHome);
-  const total = logs.reduce<number>((acc, entry) => acc + (parseNumber(child(child(entry, "stat"), statName)) ?? 0), 0);
+  const total = logs.reduce<number>((acc, entry) => addParsedStat(acc, child(entry, "stat"), statName), 0);
   return splitFromTotals(total, logs.length);
 }
 
