@@ -34,11 +34,13 @@ export interface EngineInput {
   markets: Market[];
   nowIso: string;
   minConfidence?: number;
+  minEdgePct?: number;
 }
 
 export interface EngineOutput {
   picks: Pick[];
   combos: Combo[];
+  bestBet: BestBet | null;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -523,6 +525,24 @@ export function runModel(input: EngineInput): EngineOutput {
 
   return { picks: ranked, combos, bestBet };
 
+}
+
+/**
+ * Single highest-conviction play of the day.
+ * Requires a positive edge, non-LOW data quality and reasonably fresh inputs —
+ * otherwise no best bet is claimed at all.
+ */
+function pickBestBet(picks: Pick[]): BestBet | null {
+  const eligible = picks.filter(
+    (p) =>
+      (p.edgePct ?? -1) > 0 &&
+      p.dataQuality !== "LOW" &&
+      p.freshness !== "VERY_STALE" &&
+      (p.expectedRoi ?? -1) > 0,
+  );
+  const top = eligible[0];
+  if (!top) return null;
+  return { pick: top, score: top.rankScore, rationale: rankRationale(top) };
 }
 
 function dedupePicks(picks: Pick[]): Pick[] {
