@@ -275,17 +275,77 @@ function oddsValue(raw: unknown, side: "home" | "away", kind: "moneyline" | "spr
   return null;
 }
 
-function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, odds: unknown, nowIso: string) {
-  const provider = child(odds, "provider");
-  const sportsbook = asString(child(provider, "name")) ?? "Live odds";
+/** Opening numbers, when the provider exposes them, for line-movement tracking. */
+function openingValue(raw: unknown, side: "home" | "away", kind: "moneyline" | "spreadOdds" | "spreadLine"): number | null {
+  const sideOdds = child(raw, side === "home" ? "homeTeamOdds" : "awayTeamOdds");
+  const open = child(sideOdds, "open");
+  if (kind === "moneyline") return parseAmerican(child(open, "moneyLine"));
+  if (kind === "spreadOdds") return parseAmerican(child(child(open, "spread"), "alternateDisplayValue"));
+  return parseNumber(child(child(open, "pointSpread"), "alternateDisplayValue"));
+}
+
+/** Highest payout wins: compare in decimal space so +/- prices sort correctly. */
+function bestQuote(quotes: BookQuote[]): BookQuote | null {
+  let best: BookQuote | null = null;
+  for (const quote of quotes) {
+    if (!best || americanToDecimal(quote.american) > americanToDecimal(best.american)) best = quote;
+  }
+  return best;
+}
+
+function buildMovement(
+  oddsItems: unknown[],
+  side: "home" | "away",
+  kind: "moneyline" | "spreadOdds",
+  current: BookQuote | null,
+  nowIso: string,
+): LineMovement | null {
+  for (const item of oddsItems) {
+    const openingOdds = openingValue(item, side, kind);
+    if (openingOdds === null) continue;
+    const openingLine = kind === "spreadOdds" ? openingValue(item, side, "spreadLine") : null;
+    const movement = {
+      openingLine,
+      currentLine: current?.line ?? null,
+      openingOdds,
+      currentOdds: current?.american ?? null,
+      openedAt: null,
+      updatedAt: nowIso,
+      direction: "UNAVAILABLE" as LineMovement["direction"],
+    };
+    movement.direction = movementDirection(movement);
+    return movement;
+  }
+  return null;
+}
+
+/**
+ * Builds one market per team/side using every sportsbook the provider returns.
+ * The market's headline price is the best available across books.
+ */
+function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, oddsItems: unknown[], nowIso: string) {
   const sides: { key: "home" | "away"; team: Team }[] = [
     { key: "home", team: game.homeTeam },
     { key: "away", team: game.awayTeam },
   ];
 
   for (const side of sides) {
-    const mlOdds = makeOdds(oddsValue(odds, side.key, "moneyline"), sportsbook, nowIso);
-    if (mlOdds) {
+    const mlQuotes: BookQuote[] = [];
+    const rlQuotes: BookQuote[] = [];
+
+    for (const item of oddsItems) {
+      const sportsbook = asString(child(child(item, "provider"), "name")) ?? "Live odds";
+      const ml = oddsValue(item, side.key, "moneyline");
+      if (ml !== null) mlQuotes.push({ sportsbook, american: ml, line: null, updatedAt: nowIso });
+      const spreadLine = oddsValue(item, side.key, "spreadLine");
+      const spreadOdds = oddsValue(item, side.key, "spreadOdds");
+      if (spreadLine !== null && spreadOdds !== null) {
+        rlQuotes.push({ sportsbook, american: spreadOdds, line: spreadLine, updatedAt: nowIso });
+      }
+    }
+
+    const bestMl = bestQuote(mlQuotes);
+    if (bestMl) {
       markets.push({
         id: `${game.id}-${side.team.id}-moneyline`,
         gameId: game.id,
@@ -294,15 +354,16 @@ function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, odds: unknown
         marketType: "MONEYLINE",
         label: "Moneyline",
         line: null,
-        odds: mlOdds,
-        sportsbook,
+        odds: makeOdds(bestMl.american, bestMl.sportsbook, nowIso),
+        quotes: mlQuotes,
+        sportsbook: bestMl.sportsbook,
         updatedAt: nowIso,
+        movement: buildMovement(oddsItems, side.key, "moneyline", bestMl, nowIso),
       });
     }
 
-    const spreadLine = oddsValue(odds, side.key, "spreadLine");
-    const spreadOdds = makeOdds(oddsValue(odds, side.key, "spreadOdds"), sportsbook, nowIso);
-    if (spreadLine !== null && spreadOdds) {
+    const bestRl = bestQuote(rlQuotes);
+    if (bestRl) {
       markets.push({
         id: `${game.id}-${side.team.id}-runline`,
         gameId: game.id,
@@ -310,14 +371,17 @@ function addTeamMarketsFromCoreOdds(markets: Market[], game: Game, odds: unknown
         teamId: side.team.id,
         marketType: "RUNLINE",
         label: "Runline",
-        line: spreadLine,
-        odds: spreadOdds,
-        sportsbook,
+        line: bestRl.line,
+        odds: makeOdds(bestRl.american, bestRl.sportsbook, nowIso),
+        quotes: rlQuotes,
+        sportsbook: bestRl.sportsbook,
         updatedAt: nowIso,
+        movement: buildMovement(oddsItems, side.key, "spreadOdds", bestRl, nowIso),
       });
     }
   }
 }
+
 
 async function fetchTeamSeasonStats(teamStats: Map<string, TeamStatistics>, season: string) {
   const json = await getJsonSettled(`${MLB_BASE}/teams/stats?group=hitting,pitching&stats=season&season=${season}&sportIds=1`);
