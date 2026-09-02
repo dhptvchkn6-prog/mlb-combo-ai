@@ -656,6 +656,16 @@ function buildCombos(pool: Pick[], nowIso: string, minConfidence: number): Combo
     const confidence = Math.round(clamp(avgConfidence - (legs.length - 2) * 3, 0, 100));
     const teams = legs.map((leg) => `${leg.teamAbbreviation} vs ${leg.opponentAbbreviation}`).join(", ");
 
+    const evPer100 = expectedValuePer100(modelProbability, combined);
+    const dataQuality: DataQuality = legs.some((leg) => leg.dataQuality === "LOW")
+      ? "LOW"
+      : legs.every((leg) => leg.dataQuality === "HIGH")
+        ? "HIGH"
+        : "MEDIUM";
+    const correlationRisk = correlationRiskFor(legs);
+    const rankScore =
+      Math.round((legs.reduce((acc, leg) => acc + leg.rankScore, 0) / legs.length) * 10) / 10;
+
     combos.push({
       id: comboIdFor(recipe.risk, legs),
       name: recipe.name,
@@ -666,14 +676,35 @@ function buildCombos(pool: Pick[], nowIso: string, minConfidence: number): Combo
       impliedProbability,
       confidence,
       estimatedEdge: modelProbability - impliedProbability,
-      reasoning: `${recipe.reasoning} Matchups: ${teams}. Higher-risk categories are labeled by volatility and leg count, not presented as safe.`,
+      reasoning: `${recipe.reasoning} Matchups: ${teams}. Correlation risk ${correlationRisk.toLowerCase()}. Higher-risk categories are labeled by volatility and leg count, not presented as safe.`,
       createdAt: nowIso,
+      decimalOdds: decimal,
+      evPer100,
+      expectedRoi: evPer100 / 100,
+      correlationRisk,
+      dataQuality,
+      rankScore,
+      modelVersion: MODEL_VERSION,
     });
   }
 
   return combos.sort((a, b) => {
-    const confidenceDelta = b.confidence - a.confidence;
-    if (confidenceDelta !== 0) return confidenceDelta;
-    return (b.estimatedEdge ?? -1) - (a.estimatedEdge ?? -1);
+    const scoreDelta = b.rankScore - a.rankScore;
+    if (Math.abs(scoreDelta) > 0.05) return scoreDelta;
+    return (b.expectedRoi ?? -1) - (a.expectedRoi ?? -1);
   });
+}
+
+/**
+ * Legs are already blocked from sharing a game, but same-slate exposure
+ * (same market family, same division-style matchup) still correlates outcomes.
+ */
+function correlationRiskFor(legs: Pick[]): CorrelationRisk {
+  const games = new Set(legs.map((leg) => leg.gameId));
+  if (games.size < legs.length) return "HIGH";
+  const families = new Set(legs.map((leg) => leg.marketType));
+  if (families.size === 1 && legs.length >= 4) return "MEDIUM";
+  const runlines = legs.filter((leg) => leg.marketType === "RUNLINE").length;
+  if (runlines >= 3) return "MEDIUM";
+  return "LOW";
 }
