@@ -1,8 +1,18 @@
 // Scoring engine — pure, live data-in / ranked data-out. No network, no UI.
 
 import { americanToDecimal, americanToImplied, decimalToAmerican } from "../odds";
+import {
+  MODEL_VERSION,
+  breakEvenProbability,
+  calibrateProbability,
+  expectedValuePer100,
+  freshnessFor,
+  rankScoreFor,
+} from "./metrics";
 import type {
+  BestBet,
   Combo,
+  CorrelationRisk,
   DataQuality,
   Game,
   Market,
@@ -14,6 +24,7 @@ import type {
   Team,
   TeamStatistics,
 } from "../types";
+
 
 export interface EngineInput {
   games: Game[];
