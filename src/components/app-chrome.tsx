@@ -10,6 +10,7 @@ const NAV = [
   { to: "/games", label: "Games", icon: "⚾" },
   { to: "/combos", label: "Combos", icon: "🔥" },
   { to: "/stats", label: "Stats", icon: "📊" },
+  { to: "/performance", label: "ROI", icon: "📈" },
   { to: "/settings", label: "Settings", icon: "⚙️" },
 ] as const;
 
