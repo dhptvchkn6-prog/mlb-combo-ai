@@ -282,7 +282,19 @@ function createTeamPick(
     factor("Data freshness", `${freshMin} min old`),
   ];
 
-  return {
+  const missingInputs: string[] = [];
+  if (!pitcher) missingInputs.push("starting pitcher");
+  if (!opposingPitcher) missingInputs.push("opposing pitcher");
+  if (siteWinPct === null || oppSiteWinPct === null) missingInputs.push("home/away splits");
+  if (stats.runsPerGame === null) missingInputs.push("runs per game");
+  if (stats.bullpenEra === null) missingInputs.push("bullpen ERA");
+  if (!game.weather) missingInputs.push("weather");
+  const evidence = clamp(qualityScore / 5, 0, 1);
+  const availability =
+    (game.lineupStatus === "CONFIRMED" ? 0.5 : game.lineupStatus === "PROJECTED" ? 0.35 : 0.15) +
+    (pitcher && opposingPitcher ? 0.5 : 0.2);
+
+  return finalizePick({
     id: `pick-${market.id}`,
     marketId: market.id,
     gameId: game.id,
@@ -320,7 +332,15 @@ function createTeamPick(
     handednessMatchup: `SP ${pitcher?.throws ?? "—"} vs opposing SP ${opposingPitcher?.throws ?? "—"}`,
     dataFreshnessMinutes: freshMin,
     updatedAt: nowIso,
-  };
+  }, {
+    market,
+    evidence,
+    availability: clamp(availability, 0, 1),
+    missingInputs,
+    playerStatus: null,
+    lineupStatus: game.lineupStatus,
+    battingOrder: null,
+  });
 }
 
 function createPlayerPick(
@@ -385,7 +405,18 @@ function createPlayerPick(
     ),
   );
 
-  return {
+  const missingInputs: string[] = [];
+  if (!opposingPitcher) missingInputs.push("opposing pitcher");
+  if (stats.opponent === null) missingInputs.push("opponent split");
+  if (stats.last5.games < 5) missingInputs.push("last 5 games");
+  if (!game.weather) missingInputs.push("weather");
+  if (game.lineupStatus !== "CONFIRMED") missingInputs.push("confirmed lineup");
+  const evidence = clamp(qualityScore / 5, 0, 1) * (stats.sampleSize >= 50 ? 1 : 0.7);
+  const availability =
+    (player.status === "ACTIVE" ? 0.55 : player.status === "QUESTIONABLE" ? 0.25 : 0.1) +
+    (game.lineupStatus === "CONFIRMED" ? 0.45 : game.lineupStatus === "PROJECTED" ? 0.3 : 0.1);
+
+  return finalizePick({
     id: `pick-${market.id}`,
     marketId: market.id,
     gameId: game.id,
@@ -439,7 +470,15 @@ function createPlayerPick(
     handednessMatchup: `${player.bats} vs ${opposingPitcher?.throws ?? "—"}`,
     dataFreshnessMinutes: freshMin,
     updatedAt: nowIso,
-  };
+  }, {
+    market,
+    evidence,
+    availability: clamp(availability, 0, 1),
+    missingInputs,
+    playerStatus: player.status,
+    lineupStatus: game.lineupStatus,
+    battingOrder: null,
+  });
 }
 
 export function runModel(input: EngineInput): EngineOutput {
