@@ -7,6 +7,7 @@ import {
   calibrateProbability,
   expectedValuePer100,
   freshnessFor,
+  rankRationale,
   rankScoreFor,
 } from "./metrics";
 import type {
