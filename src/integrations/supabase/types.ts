@@ -14,7 +14,126 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      line_snapshots: {
+        Row: {
+          american: number
+          captured_at: string
+          game_id: string
+          id: string
+          line: number | null
+          market_id: string
+          sportsbook: string
+        }
+        Insert: {
+          american: number
+          captured_at?: string
+          game_id: string
+          id?: string
+          line?: number | null
+          market_id: string
+          sportsbook: string
+        }
+        Update: {
+          american?: number
+          captured_at?: string
+          game_id?: string
+          id?: string
+          line?: number | null
+          market_id?: string
+          sportsbook?: string
+        }
+        Relationships: []
+      }
+      predictions: {
+        Row: {
+          actual_value: number | null
+          american: number
+          confidence: number
+          created_at: string
+          data_quality: string
+          edge: number
+          ev_per_100: number
+          game_date: string
+          game_id: string
+          graded_at: string | null
+          id: string
+          implied_probability: number
+          line: number | null
+          market_id: string
+          market_label: string
+          market_type: string
+          model_probability: number
+          model_version: string
+          opponent: string
+          player_id: string | null
+          prediction_id: string
+          profit_units: number | null
+          result: string
+          risk: string
+          selection_type: string
+          sportsbook: string
+          subject: string
+        }
+        Insert: {
+          actual_value?: number | null
+          american: number
+          confidence: number
+          created_at?: string
+          data_quality: string
+          edge: number
+          ev_per_100: number
+          game_date: string
+          game_id: string
+          graded_at?: string | null
+          id?: string
+          implied_probability: number
+          line?: number | null
+          market_id: string
+          market_label: string
+          market_type: string
+          model_probability: number
+          model_version: string
+          opponent: string
+          player_id?: string | null
+          prediction_id: string
+          profit_units?: number | null
+          result?: string
+          risk: string
+          selection_type: string
+          sportsbook: string
+          subject: string
+        }
+        Update: {
+          actual_value?: number | null
+          american?: number
+          confidence?: number
+          created_at?: string
+          data_quality?: string
+          edge?: number
+          ev_per_100?: number
+          game_date?: string
+          game_id?: string
+          graded_at?: string | null
+          id?: string
+          implied_probability?: number
+          line?: number | null
+          market_id?: string
+          market_label?: string
+          market_type?: string
+          model_probability?: number
+          model_version?: string
+          opponent?: string
+          player_id?: string | null
+          prediction_id?: string
+          profit_units?: number | null
+          result?: string
+          risk?: string
+          selection_type?: string
+          sportsbook?: string
+          subject?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
