@@ -1,8 +1,19 @@
 // Scoring engine — pure, live data-in / ranked data-out. No network, no UI.
 
 import { americanToDecimal, americanToImplied, decimalToAmerican } from "../odds";
+import {
+  MODEL_VERSION,
+  breakEvenProbability,
+  calibrateProbability,
+  expectedValuePer100,
+  freshnessFor,
+  rankRationale,
+  rankScoreFor,
+} from "./metrics";
 import type {
+  BestBet,
   Combo,
+  CorrelationRisk,
   DataQuality,
   Game,
   Market,
@@ -15,6 +26,7 @@ import type {
   TeamStatistics,
 } from "../types";
 
+
 export interface EngineInput {
   games: Game[];
   players: Player[];
@@ -23,11 +35,13 @@ export interface EngineInput {
   markets: Market[];
   nowIso: string;
   minConfidence?: number;
+  minEdgePct?: number;
 }
 
 export interface EngineOutput {
   picks: Pick[];
   combos: Combo[];
+  bestBet: BestBet | null;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -68,6 +82,104 @@ function riskFor(probability: number, edge: number | null, marketType: Market["m
   if (probability >= 0.54) return "SMART";
   return "AGGRESSIVE";
 }
+
+type V2Keys =
+  | "decimalOdds"
+  | "evPer100"
+  | "expectedRoi"
+  | "breakEvenProbability"
+  | "edgePct"
+  | "rankScore"
+  | "quotes"
+  | "bestSportsbook"
+  | "movement"
+  | "freshness"
+  | "playerStatus"
+  | "lineupStatus"
+  | "battingOrder"
+  | "missingInputs"
+  | "modelVersion";
+
+export type PickDraft = Omit<Pick, V2Keys>;
+
+interface FinalizeContext {
+  market: Market;
+  /** 0..1 strength of the statistical evidence behind the raw projection. */
+  evidence: number;
+  /** 0..1 certainty that the selection will actually be live (lineup, health). */
+  availability: number;
+  missingInputs: string[];
+  playerStatus: Pick["playerStatus"];
+  lineupStatus: Pick["lineupStatus"];
+  battingOrder: number | null;
+}
+
+/**
+ * Converts a raw draft into a fully-priced pick:
+ * calibrates the probability, derives EV/ROI/break-even, and scores the ranking.
+ */
+function finalizePick(draft: PickDraft, ctx: FinalizeContext): Pick {
+  const american = draft.odds?.american ?? null;
+  const implied = american === null ? null : americanToImplied(american);
+  const probability = calibrateProbability(draft.probability, implied, ctx.evidence);
+  const edge = implied === null ? null : probability - implied;
+  const evPer100 = american === null ? null : expectedValuePer100(probability, american);
+  const freshness = freshnessFor(draft.dataFreshnessMinutes);
+
+  const qualityBonus = draft.dataQuality === "HIGH" ? 22 : draft.dataQuality === "MEDIUM" ? 13 : 4;
+  const confidence = Math.round(
+    clamp(
+      probability * 55 +
+        qualityBonus +
+        clamp((edge ?? 0) * 160, -15, 15) +
+        ctx.availability * 10 -
+        clamp(draft.dataFreshnessMinutes / 6, 0, 10) -
+        ctx.missingInputs.length * 2,
+      0,
+      100,
+    ),
+  );
+
+  const quotes = ctx.market.quotes ?? [];
+  const pick: Pick = {
+    ...draft,
+    probability,
+    impliedProbability: implied,
+    edge,
+    confidence,
+    risk: riskFor(probability, edge, draft.marketType),
+    decimalOdds: american === null ? null : americanToDecimal(american),
+    evPer100,
+    expectedRoi: evPer100 === null ? null : evPer100 / 100,
+    breakEvenProbability: american === null ? null : breakEvenProbability(american),
+    edgePct: edge === null ? null : edge * 100,
+    rankScore: 0,
+    quotes,
+    bestSportsbook: draft.odds?.sportsbook ?? null,
+    movement: ctx.market.movement,
+    freshness,
+    playerStatus: ctx.playerStatus,
+    lineupStatus: ctx.lineupStatus,
+    battingOrder: ctx.battingOrder,
+    missingInputs: ctx.missingInputs,
+    modelVersion: MODEL_VERSION,
+  };
+
+  pick.rankScore = rankScoreFor({
+    expectedRoi: pick.expectedRoi,
+    edge: pick.edge,
+    confidence: pick.confidence,
+    dataQuality: pick.dataQuality,
+    freshness: pick.freshness,
+    availabilityScore: ctx.availability,
+    american,
+    quoteCount: quotes.length,
+  });
+
+  return pick;
+}
+
+
 
 function hasRequiredMarketData(market: Market): boolean {
   return Boolean(market.gameId && market.teamId && market.odds && Number.isFinite(market.odds?.american));
@@ -173,7 +285,19 @@ function createTeamPick(
     factor("Data freshness", `${freshMin} min old`),
   ];
 
-  return {
+  const missingInputs: string[] = [];
+  if (!pitcher) missingInputs.push("starting pitcher");
+  if (!opposingPitcher) missingInputs.push("opposing pitcher");
+  if (siteWinPct === null || oppSiteWinPct === null) missingInputs.push("home/away splits");
+  if (stats.runsPerGame === null) missingInputs.push("runs per game");
+  if (stats.bullpenEra === null) missingInputs.push("bullpen ERA");
+  if (!game.weather) missingInputs.push("weather");
+  const evidence = clamp(qualityScore / 5, 0, 1);
+  const availability =
+    (game.lineupStatus === "CONFIRMED" ? 0.5 : game.lineupStatus === "PROJECTED" ? 0.35 : 0.15) +
+    (pitcher && opposingPitcher ? 0.5 : 0.2);
+
+  return finalizePick({
     id: `pick-${market.id}`,
     marketId: market.id,
     gameId: game.id,
@@ -211,7 +335,15 @@ function createTeamPick(
     handednessMatchup: `SP ${pitcher?.throws ?? "—"} vs opposing SP ${opposingPitcher?.throws ?? "—"}`,
     dataFreshnessMinutes: freshMin,
     updatedAt: nowIso,
-  };
+  }, {
+    market,
+    evidence,
+    availability: clamp(availability, 0, 1),
+    missingInputs,
+    playerStatus: null,
+    lineupStatus: game.lineupStatus,
+    battingOrder: null,
+  });
 }
 
 function createPlayerPick(
@@ -276,7 +408,18 @@ function createPlayerPick(
     ),
   );
 
-  return {
+  const missingInputs: string[] = [];
+  if (!opposingPitcher) missingInputs.push("opposing pitcher");
+  if (stats.opponent === null) missingInputs.push("opponent split");
+  if (stats.last5.games < 5) missingInputs.push("last 5 games");
+  if (!game.weather) missingInputs.push("weather");
+  if (game.lineupStatus !== "CONFIRMED") missingInputs.push("confirmed lineup");
+  const evidence = clamp(qualityScore / 5, 0, 1) * (stats.sampleSize >= 50 ? 1 : 0.7);
+  const availability =
+    (player.status === "ACTIVE" ? 0.55 : player.status === "QUESTIONABLE" ? 0.25 : 0.1) +
+    (game.lineupStatus === "CONFIRMED" ? 0.45 : game.lineupStatus === "PROJECTED" ? 0.3 : 0.1);
+
+  return finalizePick({
     id: `pick-${market.id}`,
     marketId: market.id,
     gameId: game.id,
@@ -330,7 +473,15 @@ function createPlayerPick(
     handednessMatchup: `${player.bats} vs ${opposingPitcher?.throws ?? "—"}`,
     dataFreshnessMinutes: freshMin,
     updatedAt: nowIso,
-  };
+  }, {
+    market,
+    evidence,
+    availability: clamp(availability, 0, 1),
+    missingInputs,
+    playerStatus: player.status,
+    lineupStatus: game.lineupStatus,
+    battingOrder: null,
+  });
 }
 
 export function runModel(input: EngineInput): EngineOutput {
@@ -360,16 +511,39 @@ export function runModel(input: EngineInput): EngineOutput {
     picks.push(pick);
   }
 
-  const ranked = dedupePicks(picks).sort((a, b) => {
-    const edgeDelta = (b.edge ?? -1) - (a.edge ?? -1);
-    if (Math.abs(edgeDelta) > 0.015) return edgeDelta;
-    return b.confidence - a.confidence;
-  });
+  const minEdgePct = input.minEdgePct ?? 0;
+  const ranked = dedupePicks(picks)
+    .filter((p) => (minEdgePct <= 0 ? true : (p.edgePct ?? -100) >= minEdgePct))
+    .sort((a, b) => {
+      const scoreDelta = b.rankScore - a.rankScore;
+      if (Math.abs(scoreDelta) > 0.05) return scoreDelta;
+      return (b.expectedRoi ?? -1) - (a.expectedRoi ?? -1);
+    });
 
   const qualified = ranked.filter((p) => p.dataQuality !== "LOW");
   const combos = buildCombos(qualified, nowIso, input.minConfidence ?? 55);
+  const bestBet = pickBestBet(ranked);
 
-  return { picks: ranked, combos };
+  return { picks: ranked, combos, bestBet };
+
+}
+
+/**
+ * Single highest-conviction play of the day.
+ * Requires a positive edge, non-LOW data quality and reasonably fresh inputs —
+ * otherwise no best bet is claimed at all.
+ */
+function pickBestBet(picks: Pick[]): BestBet | null {
+  const eligible = picks.filter(
+    (p) =>
+      (p.edgePct ?? -1) > 0 &&
+      p.dataQuality !== "LOW" &&
+      p.freshness !== "VERY_STALE" &&
+      (p.expectedRoi ?? -1) > 0,
+  );
+  const top = eligible[0];
+  if (!top) return null;
+  return { pick: top, score: top.rankScore, rationale: rankRationale(top) };
 }
 
 function dedupePicks(picks: Pick[]): Pick[] {
@@ -482,6 +656,16 @@ function buildCombos(pool: Pick[], nowIso: string, minConfidence: number): Combo
     const confidence = Math.round(clamp(avgConfidence - (legs.length - 2) * 3, 0, 100));
     const teams = legs.map((leg) => `${leg.teamAbbreviation} vs ${leg.opponentAbbreviation}`).join(", ");
 
+    const evPer100 = expectedValuePer100(modelProbability, combined);
+    const dataQuality: DataQuality = legs.some((leg) => leg.dataQuality === "LOW")
+      ? "LOW"
+      : legs.every((leg) => leg.dataQuality === "HIGH")
+        ? "HIGH"
+        : "MEDIUM";
+    const correlationRisk = correlationRiskFor(legs);
+    const rankScore =
+      Math.round((legs.reduce((acc, leg) => acc + leg.rankScore, 0) / legs.length) * 10) / 10;
+
     combos.push({
       id: comboIdFor(recipe.risk, legs),
       name: recipe.name,
@@ -492,14 +676,35 @@ function buildCombos(pool: Pick[], nowIso: string, minConfidence: number): Combo
       impliedProbability,
       confidence,
       estimatedEdge: modelProbability - impliedProbability,
-      reasoning: `${recipe.reasoning} Matchups: ${teams}. Higher-risk categories are labeled by volatility and leg count, not presented as safe.`,
+      reasoning: `${recipe.reasoning} Matchups: ${teams}. Correlation risk ${correlationRisk.toLowerCase()}. Higher-risk categories are labeled by volatility and leg count, not presented as safe.`,
       createdAt: nowIso,
+      decimalOdds: decimal,
+      evPer100,
+      expectedRoi: evPer100 / 100,
+      correlationRisk,
+      dataQuality,
+      rankScore,
+      modelVersion: MODEL_VERSION,
     });
   }
 
   return combos.sort((a, b) => {
-    const confidenceDelta = b.confidence - a.confidence;
-    if (confidenceDelta !== 0) return confidenceDelta;
-    return (b.estimatedEdge ?? -1) - (a.estimatedEdge ?? -1);
+    const scoreDelta = b.rankScore - a.rankScore;
+    if (Math.abs(scoreDelta) > 0.05) return scoreDelta;
+    return (b.expectedRoi ?? -1) - (a.expectedRoi ?? -1);
   });
+}
+
+/**
+ * Legs are already blocked from sharing a game, but same-slate exposure
+ * (same market family, same division-style matchup) still correlates outcomes.
+ */
+function correlationRiskFor(legs: Pick[]): CorrelationRisk {
+  const games = new Set(legs.map((leg) => leg.gameId));
+  if (games.size < legs.length) return "HIGH";
+  const families = new Set(legs.map((leg) => leg.marketType));
+  if (families.size === 1 && legs.length >= 4) return "MEDIUM";
+  const runlines = legs.filter((leg) => leg.marketType === "RUNLINE").length;
+  if (runlines >= 3) return "MEDIUM";
+  return "LOW";
 }

@@ -67,7 +67,7 @@ export function PickLeg({ leg, index, defaultOpen = false }: { leg: Pick; index?
         />
       </button>
 
-      <div className="grid grid-cols-3 gap-2 px-3 pb-3 text-center text-[11px]">
+      <div className="grid grid-cols-4 gap-2 px-3 pb-3 text-center text-[11px]">
         <div className="rounded-lg bg-surface p-2">
           <dt className="text-muted-foreground">Model</dt>
           <dd className="font-black tabular-nums text-primary">{formatPct(leg.probability)}</dd>
@@ -79,6 +79,12 @@ export function PickLeg({ leg, index, defaultOpen = false }: { leg: Pick; index?
         <div className="rounded-lg bg-surface p-2">
           <dt className="text-muted-foreground">Edge</dt>
           <dd className="font-black tabular-nums">{formatSignedPct(leg.edge)}</dd>
+        </div>
+        <div className="rounded-lg bg-surface p-2">
+          <dt className="text-muted-foreground">EV/$100</dt>
+          <dd className="font-black tabular-nums">
+            {leg.evPer100 === null ? "—" : `${leg.evPer100 >= 0 ? "+" : ""}$${leg.evPer100.toFixed(2)}`}
+          </dd>
         </div>
       </div>
 

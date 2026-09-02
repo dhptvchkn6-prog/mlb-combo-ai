@@ -12,13 +12,17 @@ export function useBoard() {
   const queryClient = useQueryClient();
   const refreshing = useRef(false);
 
-  const queryKey = ["board", settings.dataMode, settings.minConfidence] as const;
+  const queryKey = ["board", settings.dataMode, settings.minConfidence, settings.minEdgePct] as const;
 
   const query = useQuery<BoardPayload>({
     queryKey,
     queryFn: () =>
       fetchBoard({
-        data: { requestedMode: settings.dataMode, minConfidence: settings.minConfidence },
+        data: {
+          requestedMode: settings.dataMode,
+          minConfidence: settings.minConfidence,
+          minEdgePct: settings.minEdgePct,
+        },
       }),
     staleTime: 60_000,
     enabled: hydrated,
@@ -32,7 +36,11 @@ export function useBoard() {
       refreshing.current = true;
       try {
         const data = await fetchBoard({
-          data: { requestedMode: settings.dataMode, minConfidence: settings.minConfidence },
+          data: {
+            requestedMode: settings.dataMode,
+            minConfidence: settings.minConfidence,
+            minEdgePct: settings.minEdgePct,
+          },
         });
         queryClient.setQueryData(queryKey, data);
         return data;
@@ -56,7 +64,7 @@ export function useBoard() {
     }, ms);
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.refreshInterval, settings.dataMode, settings.minConfidence]);
+  }, [settings.refreshInterval, settings.dataMode, settings.minConfidence, settings.minEdgePct]);
 
   return {
     board: query.data ?? null,

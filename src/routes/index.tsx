@@ -12,6 +12,8 @@ import {
 } from "@/components/app-chrome";
 import { ComboCard } from "@/components/combo-card";
 import { PickLeg } from "@/components/pick-leg";
+import { PickCard } from "@/components/pick-card";
+import { BestBetSection } from "@/components/best-bet";
 import { useBoard } from "@/lib/use-board";
 import { useSettings } from "@/lib/settings";
 import type { RiskCategory } from "@/lib/types";
@@ -68,6 +70,7 @@ function HomeScreen() {
 
   const filtered = (board?.combos ?? []).filter((c) => c.risk === category);
   const best = board?.combos?.[0] ?? null;
+  const topPicks = (board?.picks ?? []).slice(0, 5);
 
   return (
     <Screen>
@@ -151,6 +154,19 @@ function HomeScreen() {
       </p>
 
       {isLoading ? <LoadingCards /> : null}
+
+      {!isLoading && !isError ? <BestBetSection bestBet={board?.bestBet ?? null} /> : null}
+
+      {!isLoading && topPicks.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="text-sm font-black uppercase tracking-widest text-muted-foreground">
+            Top ranked bets
+          </h2>
+          {topPicks.map((pick, i) => (
+            <PickCard key={pick.id} pick={pick} rank={i} />
+          ))}
+        </section>
+      ) : null}
 
       {!isLoading && best ? (
         <section className="app-card border-primary/40 p-4 shadow-glow">

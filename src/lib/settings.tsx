@@ -8,11 +8,15 @@ const STORAGE_KEY = "pbc.settings.v1";
 export const DEFAULT_SETTINGS: Settings = {
   riskPreference: "BALANCED",
   minConfidence: 60,
+  minEdgePct: 0,
   preferredLegs: 3,
   sportsbook: "DraftKings",
   refreshInterval: "MANUAL",
   dataMode: "LIVE",
+  unitSize: 100,
+  freshnessToleranceMinutes: 30,
 };
+
 
 export const SPORTSBOOKS = [
   "DraftKings",
