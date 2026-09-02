@@ -80,6 +80,12 @@ export function PickLeg({ leg, index, defaultOpen = false }: { leg: Pick; index?
           <dt className="text-muted-foreground">Edge</dt>
           <dd className="font-black tabular-nums">{formatSignedPct(leg.edge)}</dd>
         </div>
+        <div className="rounded-lg bg-surface p-2">
+          <dt className="text-muted-foreground">EV/$100</dt>
+          <dd className="font-black tabular-nums">
+            {leg.evPer100 === null ? "—" : `${leg.evPer100 >= 0 ? "+" : ""}$${leg.evPer100.toFixed(2)}`}
+          </dd>
+        </div>
       </div>
 
       {open ? (
