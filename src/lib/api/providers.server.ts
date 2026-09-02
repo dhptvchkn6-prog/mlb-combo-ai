@@ -712,7 +712,11 @@ export async function fetchLiveBoard(dateIso: string, nowIso: string): Promise<P
       statistics,
       teamStatistics: Array.from(teamStats.values()),
       markets,
-      sources: sourceStatus({ games, players, markets }, injuryResult.names.size, nowIso),
+      sources: sourceStatus(
+        { games, players, markets },
+        injuryResult.connected ? Math.max(1, injuryResult.names.size) : 0,
+        nowIso,
+      ),
     };
 
     return { connected: true, data: payload, error: null };
