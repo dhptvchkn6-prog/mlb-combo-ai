@@ -124,6 +124,65 @@ function SettingsScreen() {
         </div>
       </Section>
 
+      <Section title="Minimum edge">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">Model minus implied</span>
+          <span className="text-lg font-black tabular-nums">
+            {settings.minEdgePct > 0 ? "+" : ""}
+            {settings.minEdgePct.toFixed(1)} pts
+          </span>
+        </div>
+        <input
+          type="range"
+          min={-5}
+          max={15}
+          step={0.5}
+          value={settings.minEdgePct}
+          aria-label="Minimum edge in percentage points"
+          onChange={(e) => update("minEdgePct", Number(e.target.value))}
+          className="mt-3 h-10 w-full accent-[var(--primary)]"
+        />
+        <p className="text-[11px] text-muted-foreground">
+          Only bets whose calibrated probability beats the sportsbook's implied probability by this many
+          points are shown.
+        </p>
+      </Section>
+
+      <Section title="Unit size">
+        <div className="flex items-center justify-between">
+          <span className="text-sm text-muted-foreground">Stake per unit</span>
+          <span className="text-lg font-black tabular-nums">${settings.unitSize}</span>
+        </div>
+        <OptionRow<number>
+          label="Unit size"
+          value={settings.unitSize}
+          onChange={(v) => update("unitSize", v)}
+          options={[
+            { value: 10, label: "$10" },
+            { value: 25, label: "$25" },
+            { value: 50, label: "$50" },
+            { value: 100, label: "$100" },
+          ]}
+        />
+      </Section>
+
+      <Section title="Odds freshness tolerance">
+        <OptionRow<number>
+          label="Odds freshness tolerance"
+          value={settings.freshnessToleranceMinutes}
+          onChange={(v) => update("freshnessToleranceMinutes", v)}
+          options={[
+            { value: 15, label: "15 min" },
+            { value: 30, label: "30 min" },
+            { value: 60, label: "60 min" },
+            { value: 120, label: "2 hrs" },
+          ]}
+        />
+        <p className="mt-2 text-[11px] text-muted-foreground">
+          Prices older than this are flagged as stale on every pick card.
+        </p>
+      </Section>
+
       <Section title="Preferred number of legs">
         <OptionRow<Settings["preferredLegs"]>
           label="Preferred number of legs"
