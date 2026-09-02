@@ -80,6 +80,26 @@ export interface Odds {
   updatedAt: string;
 }
 
+/** One sportsbook's price for a market. A market may carry many. */
+export interface BookQuote {
+  sportsbook: string;
+  american: number;
+  line: number | null;
+  updatedAt: string;
+}
+
+export type MovementDirection = "TOWARD" | "AWAY" | "UNCHANGED" | "UNAVAILABLE";
+
+export interface LineMovement {
+  openingLine: number | null;
+  currentLine: number | null;
+  openingOdds: number | null;
+  currentOdds: number | null;
+  openedAt: string | null;
+  updatedAt: string | null;
+  direction: MovementDirection;
+}
+
 export interface Market {
   id: string;
   gameId: string;
@@ -88,10 +108,15 @@ export interface Market {
   marketType: MarketType;
   label: string;
   line: number | null;
+  /** Best available price across all quotes. */
   odds: Odds | null;
+  /** Every sportsbook price currently supplied by the connected provider. */
+  quotes: BookQuote[];
   sportsbook: string | null;
   updatedAt: string;
+  movement: LineMovement | null;
 }
+
 
 export interface SplitLine {
   average: number;
