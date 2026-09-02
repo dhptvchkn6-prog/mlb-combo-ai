@@ -80,6 +80,104 @@ function riskFor(probability: number, edge: number | null, marketType: Market["m
   return "AGGRESSIVE";
 }
 
+type V2Keys =
+  | "decimalOdds"
+  | "evPer100"
+  | "expectedRoi"
+  | "breakEvenProbability"
+  | "edgePct"
+  | "rankScore"
+  | "quotes"
+  | "bestSportsbook"
+  | "movement"
+  | "freshness"
+  | "playerStatus"
+  | "lineupStatus"
+  | "battingOrder"
+  | "missingInputs"
+  | "modelVersion";
+
+export type PickDraft = Omit<Pick, V2Keys>;
+
+interface FinalizeContext {
+  market: Market;
+  /** 0..1 strength of the statistical evidence behind the raw projection. */
+  evidence: number;
+  /** 0..1 certainty that the selection will actually be live (lineup, health). */
+  availability: number;
+  missingInputs: string[];
+  playerStatus: Pick["playerStatus"];
+  lineupStatus: Pick["lineupStatus"];
+  battingOrder: number | null;
+}
+
+/**
+ * Converts a raw draft into a fully-priced pick:
+ * calibrates the probability, derives EV/ROI/break-even, and scores the ranking.
+ */
+function finalizePick(draft: PickDraft, ctx: FinalizeContext): Pick {
+  const american = draft.odds?.american ?? null;
+  const implied = american === null ? null : americanToImplied(american);
+  const probability = calibrateProbability(draft.probability, implied, ctx.evidence);
+  const edge = implied === null ? null : probability - implied;
+  const evPer100 = american === null ? null : expectedValuePer100(probability, american);
+  const freshness = freshnessFor(draft.dataFreshnessMinutes);
+
+  const qualityBonus = draft.dataQuality === "HIGH" ? 22 : draft.dataQuality === "MEDIUM" ? 13 : 4;
+  const confidence = Math.round(
+    clamp(
+      probability * 55 +
+        qualityBonus +
+        clamp((edge ?? 0) * 160, -15, 15) +
+        ctx.availability * 10 -
+        clamp(draft.dataFreshnessMinutes / 6, 0, 10) -
+        ctx.missingInputs.length * 2,
+      0,
+      100,
+    ),
+  );
+
+  const quotes = ctx.market.quotes ?? [];
+  const pick: Pick = {
+    ...draft,
+    probability,
+    impliedProbability: implied,
+    edge,
+    confidence,
+    risk: riskFor(probability, edge, draft.marketType),
+    decimalOdds: american === null ? null : americanToDecimal(american),
+    evPer100,
+    expectedRoi: evPer100 === null ? null : evPer100 / 100,
+    breakEvenProbability: american === null ? null : breakEvenProbability(american),
+    edgePct: edge === null ? null : edge * 100,
+    rankScore: 0,
+    quotes,
+    bestSportsbook: draft.odds?.sportsbook ?? null,
+    movement: ctx.market.movement,
+    freshness,
+    playerStatus: ctx.playerStatus,
+    lineupStatus: ctx.lineupStatus,
+    battingOrder: ctx.battingOrder,
+    missingInputs: ctx.missingInputs,
+    modelVersion: MODEL_VERSION,
+  };
+
+  pick.rankScore = rankScoreFor({
+    expectedRoi: pick.expectedRoi,
+    edge: pick.edge,
+    confidence: pick.confidence,
+    dataQuality: pick.dataQuality,
+    freshness: pick.freshness,
+    availabilityScore: ctx.availability,
+    american,
+    quoteCount: quotes.length,
+  });
+
+  return pick;
+}
+
+
+
 function hasRequiredMarketData(market: Market): boolean {
   return Boolean(market.gameId && market.teamId && market.odds && Number.isFinite(market.odds?.american));
 }
