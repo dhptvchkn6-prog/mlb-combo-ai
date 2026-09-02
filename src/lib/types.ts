@@ -208,7 +208,32 @@ export interface Pick {
   handednessMatchup: string;
   dataFreshnessMinutes: number;
   updatedAt: string;
+  // --- v2 analytics fields ---
+  /** Decimal representation of the best available American price. */
+  decimalOdds: number | null;
+  /** Expected profit on a $100 stake at the model probability. */
+  evPer100: number | null;
+  /** evPer100 / 100 — expected return per unit staked. */
+  expectedRoi: number | null;
+  /** Probability required to break even at the current price. */
+  breakEvenProbability: number | null;
+  /** Edge expressed in percentage points (edge * 100). */
+  edgePct: number | null;
+  /** Deterministic 0-100 ranking score used to order picks. */
+  rankScore: number;
+  /** Every sportsbook price the provider currently supplies. */
+  quotes: BookQuote[];
+  bestSportsbook: string | null;
+  movement: LineMovement | null;
+  freshness: DataFreshness;
+  playerStatus: PlayerStatus | null;
+  lineupStatus: LineupStatus;
+  battingOrder: number | null;
+  missingInputs: string[];
+  modelVersion: string;
 }
+
+export type CorrelationRisk = "LOW" | "MEDIUM" | "HIGH";
 
 export interface Combo {
   id: string;
@@ -222,14 +247,37 @@ export interface Combo {
   estimatedEdge: number | null;
   reasoning: string;
   createdAt: string;
+  // --- v2 analytics fields ---
+  decimalOdds: number | null;
+  evPer100: number | null;
+  expectedRoi: number | null;
+  correlationRisk: CorrelationRisk;
+  dataQuality: DataQuality;
+  rankScore: number;
+  modelVersion: string;
+}
+
+export type DataFreshness = "FRESH" | "AGING" | "STALE" | "VERY_STALE";
+export type SourceHealth = "CONNECTED" | "DEGRADED" | "UNAVAILABLE";
+
+export interface DataSourceStatus {
+  name: string;
+  /** Retained for backwards compatibility with existing UI. */
+  connected: boolean;
+  status: SourceHealth;
+  lastSuccessAt: string | null;
+  ageMinutes: number | null;
+  records: number;
+  error: string | null;
 }
 
 export interface DataUpdate {
   mode: DataMode;
   liveConnected: boolean;
   lastUpdatedAt: string;
-  sources: { name: string; connected: boolean }[];
+  sources: DataSourceStatus[];
   message: string;
+  modelVersion: string;
 }
 
 export interface BoardPayload {
@@ -241,6 +289,13 @@ export interface BoardPayload {
   markets: Market[];
   picks: Pick[];
   combos: Combo[];
+  bestBet: BestBet | null;
+}
+
+export interface BestBet {
+  pick: Pick;
+  score: number;
+  rationale: string[];
 }
 
 export type RiskPreference = "SAFE" | "BALANCED" | "AGGRESSIVE";
@@ -249,8 +304,75 @@ export type RefreshInterval = "MANUAL" | "5" | "15" | "30";
 export interface Settings {
   riskPreference: RiskPreference;
   minConfidence: number;
+  minEdgePct: number;
   preferredLegs: 2 | 3 | 4 | 5;
   sportsbook: string;
   refreshInterval: RefreshInterval;
   dataMode: DataMode;
+  unitSize: number;
+  freshnessToleranceMinutes: number;
 }
+
+// ---- Prediction tracking ----
+
+export type GradeResult = "WIN" | "LOSS" | "PUSH" | "VOID" | "PENDING";
+
+export interface TrackedPrediction {
+  id: string;
+  predictionId: string;
+  marketId: string;
+  gameId: string;
+  gameDate: string;
+  selectionType: SelectionType;
+  playerId: string | null;
+  subject: string;
+  opponent: string;
+  marketType: MarketType;
+  marketLabel: string;
+  line: number | null;
+  american: number;
+  sportsbook: string;
+  modelProbability: number;
+  impliedProbability: number;
+  edge: number;
+  evPer100: number;
+  confidence: number;
+  risk: RiskCategory;
+  dataQuality: DataQuality;
+  modelVersion: string;
+  createdAt: string;
+  result: GradeResult;
+  actualValue: number | null;
+  gradedAt: string | null;
+  profitUnits: number | null;
+}
+
+export interface PerformanceBucket {
+  label: string;
+  wins: number;
+  losses: number;
+  pushes: number;
+  pending: number;
+  winRate: number | null;
+  units: number;
+  roi: number | null;
+  averageEdge: number | null;
+  averageConfidence: number | null;
+}
+
+export interface PerformanceSummary {
+  overall: PerformanceBucket;
+  byMarket: PerformanceBucket[];
+  byConfidence: PerformanceBucket[];
+  byRisk: PerformanceBucket[];
+  byModelVersion: PerformanceBucket[];
+  calibration: {
+    bucket: string;
+    predicted: number | null;
+    actual: number | null;
+    samples: number;
+  }[];
+  brierScore: number | null;
+  gradedCount: number;
+}
+
