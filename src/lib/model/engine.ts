@@ -508,16 +508,21 @@ export function runModel(input: EngineInput): EngineOutput {
     picks.push(pick);
   }
 
-  const ranked = dedupePicks(picks).sort((a, b) => {
-    const edgeDelta = (b.edge ?? -1) - (a.edge ?? -1);
-    if (Math.abs(edgeDelta) > 0.015) return edgeDelta;
-    return b.confidence - a.confidence;
-  });
+  const minEdgePct = input.minEdgePct ?? 0;
+  const ranked = dedupePicks(picks)
+    .filter((p) => (minEdgePct <= 0 ? true : (p.edgePct ?? -100) >= minEdgePct))
+    .sort((a, b) => {
+      const scoreDelta = b.rankScore - a.rankScore;
+      if (Math.abs(scoreDelta) > 0.05) return scoreDelta;
+      return (b.expectedRoi ?? -1) - (a.expectedRoi ?? -1);
+    });
 
   const qualified = ranked.filter((p) => p.dataQuality !== "LOW");
   const combos = buildCombos(qualified, nowIso, input.minConfidence ?? 55);
+  const bestBet = pickBestBet(ranked);
 
-  return { picks: ranked, combos };
+  return { picks: ranked, combos, bestBet };
+
 }
 
 function dedupePicks(picks: Pick[]): Pick[] {
