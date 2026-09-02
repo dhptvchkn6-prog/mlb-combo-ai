@@ -2,7 +2,7 @@
 // Every value here is derived deterministically from inputs.
 
 import { americanToDecimal, americanToImplied } from "../odds";
-import type { DataFreshness, DataQuality, LineMovement, Pick } from "../types";
+import type { DataFreshness, DataQuality, LineMovement, Pick as PickType } from "../types";
 
 export const MODEL_VERSION = "mlb-v2.0";
 
@@ -133,7 +133,7 @@ export function rankScoreFor(input: {
 }
 
 /** Explains, in plain language, why a pick ranked where it did. */
-export function rankRationale(pick: Pick): string[] {
+export function rankRationale(pick: PickType): string[] {
   const notes: string[] = [];
   if (pick.edgePct !== null) {
     notes.push(
@@ -161,7 +161,7 @@ export function decimalFor(american: number | null): number | null {
 }
 
 export function movementDirection(
-  movement: Pick<LineMovement, "openingOdds" | "currentOdds">,
+  movement: { openingOdds: number | null; currentOdds: number | null },
 ): LineMovement["direction"] {
   const { openingOdds, currentOdds } = movement;
   if (openingOdds === null || currentOdds === null) return "UNAVAILABLE";
